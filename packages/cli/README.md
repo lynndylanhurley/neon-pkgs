@@ -1038,6 +1038,25 @@ neon snapshots schedule set --branch main --schedule '[{"frequency":"weekly","da
 
 All sub-commands honor the [global options](#global-options), including `--output json|yaml|table`.
 
+## Function templates (`functions new`)
+
+`neon functions new <template>` fetches a template from the Neon Function Registry, writes its modules into `functions/<name>/` next to `neon.ts`, and declares the result in `neon.ts` (creating it when missing), the same way `config add function` does.
+
+```bash
+neon functions templates list
+neon functions new basic
+neon functions new basic --name hello --no-add-to-config
+neon functions new <template> --operation <id> --operation <id> --install
+```
+
+A template's `layout` decides what you get. `router` writes one module per operation plus a generated `index.ts` that dispatches on the URL path, and declares one function. `separate` declares each operation as its own function under the slug the template gives it. Without `--operation` or `--all-operations`, a TTY asks which operations to include and anything else uses the template's recommended ones.
+
+Variables a template needs are declared on each function in `neon.ts` (`env: { API_KEY: process.env.API_KEY! }`) and added, without values, to `.env.example` next to it. Values are never written to `.env` or `.env.local` for you: a blank placeholder there would deploy as an empty string and delete the live value. Put the real value in the file `env pull` uses and deploy with `neon config apply --env .env.local`. `neon dev` reads function env from your shell, so export it there as well.
+
+Nothing is written until every check passes: a file that already exists with different contents needs `--force`, and a slug `neon.ts` already declares needs `--name`, `--force`, or `--no-add-to-config`.
+
+The registry lives in [`registry/`](../../registry) in this repository and is read from `main` on GitHub. Set `NEON_FUNCTION_REGISTRY_DIR` to a local checkout to try templates before they are merged, or `NEON_FUNCTION_REGISTRY_URL` to read an index from somewhere else.
+
 ## Function triggers (`triggers`)
 
 `neon triggers` (alias `neon trigger`) manages Function triggers on a branch. Types are `schedule` (a five-field UTC cron expression) and `storage_object_created` (an object-storage bucket, with an optional object-key prefix).

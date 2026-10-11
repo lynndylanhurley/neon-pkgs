@@ -99,6 +99,12 @@ export const isConfigInit = (args: {
 export const isConfigAdd = (args: { _: (string | number)[] }): boolean =>
 	args._[0] === "config" && args._[1] === "add";
 
+export const isFunctionsTemplateCommand = (args: {
+	_: (string | number)[];
+}): boolean =>
+	(args._[0] === "functions" || args._[0] === "function") &&
+	(args._[1] === "new" || args._[1] === "templates");
+
 /**
  * `neon profile …` manages credentials on disk and never calls the Neon API, so the global
  * auth middleware must skip it — mirroring {@link isConfigInit}.

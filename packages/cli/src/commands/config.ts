@@ -34,7 +34,12 @@ import {
 import chalk from "chalk";
 import type yargs from "yargs";
 import { getApiClient, type NeonApiClient } from "../api.js";
-import { type ConfigEdit, editNeonConfig } from "../config_edit.js";
+import {
+	asRelativeModulePath,
+	type ConfigEdit,
+	editNeonConfig,
+	TYPESCRIPT_EXTENSION,
+} from "../config_edit.js";
 import { type NeonConfigView, toNeonConfigView } from "../config_format.js";
 import { declaredNeonServices } from "../config_services.js";
 import {
@@ -53,7 +58,7 @@ import {
 	ensureDirectoryGitignored,
 	readContextFile,
 } from "../context.js";
-import { isCi } from "../env.js";
+import { isCi, isInteractiveTerminal } from "../env.js";
 import { loadEnvFileIntoProcess } from "../env_file.js";
 import { log } from "../log.js";
 import {
@@ -84,6 +89,10 @@ import {
 } from "../utils/config_diff.js";
 import { fillSingleProject, resolveBranchRef } from "../utils/enrichers.js";
 import { bundleEntry } from "../utils/esbuild.js";
+import {
+	deriveFunctionSlug,
+	FUNCTION_SLUG_PATTERN,
+} from "../utils/function_slug.js";
 import { readGitContext } from "../utils/git.js";
 import {
 	resolveHookEnv,
@@ -277,7 +286,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * (any dependency field). A missing or malformed package.json means none are
  * declared, so all are reported missing.
  */
-const missingDependencies = (cwd: string): string[] => {
+export const missingDependencies = (cwd: string): string[] => {
 	const declared = new Set<string>();
 	const pkgPath = join(cwd, "package.json");
 	if (existsSync(pkgPath)) {
@@ -438,7 +447,7 @@ const seedFromBranch = async (
 };
 
 /** The install command to print, prefixed with a `cd` when the project is not the cwd. */
-const installCommandFrom = (
+export const installCommandFrom = (
 	dir: string,
 	pm: PackageManager,
 	missing: readonly string[],
@@ -451,7 +460,7 @@ const installCommandFrom = (
 };
 
 /** Install the config packages the project is missing, or say how to. */
-const ensureConfigPackages = async (
+export const ensureConfigPackages = async (
 	cwd: string,
 	props: Pick<
 		ConfigInitProps,
@@ -594,15 +603,7 @@ export type ConfigAddProps = {
 	packageManager?: PackageManager;
 };
 
-/** The rule the platform enforces on function slugs, so a bad one fails before any write. */
-const FUNCTION_SLUG_PATTERN = /^[a-z0-9]{1,20}$/;
 const SCRIPT_EXTENSION = /\.(?:ts|mts|cts|js|mjs|cjs)$/;
-const TYPESCRIPT_EXTENSION = /\.(?:ts|mts|cts)$/;
-
-const asRelativeModulePath = (path: string): string =>
-	path.startsWith("./") || path.startsWith("../") || path.startsWith("/")
-		? path
-		: `./${path}`;
 
 type PlannedAdd = {
 	edit: ConfigEdit;
@@ -655,10 +656,7 @@ const planAdd = (
 			};
 		case "function": {
 			if (!FUNCTION_SLUG_PATTERN.test(target.slug)) {
-				const suggestion = target.slug
-					.toLowerCase()
-					.replace(/[^a-z0-9]/g, "")
-					.slice(0, 20);
+				const suggestion = deriveFunctionSlug(target.slug);
 				throw new Error(
 					`"${target.slug}" is not a valid function slug: use 1-20 lowercase letters and digits, no hyphens.` +
 						(suggestion ? ` Try "${suggestion}".` : ""),
@@ -1628,9 +1626,7 @@ const reportPushResult = (
 
 /** A prompt needs both ends of a terminal, and would corrupt `-o json|yaml` on stdout. */
 const canPromptForApply = (props: ConfigProps): boolean =>
-	!isCi() &&
-	Boolean(process.stdin.isTTY) &&
-	Boolean(process.stdout.isTTY) &&
+	isInteractiveTerminal() &&
 	props.output !== "json" &&
 	props.output !== "yaml";
 

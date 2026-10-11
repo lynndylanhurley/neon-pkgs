@@ -57,6 +57,7 @@ import {
 	isConfigInit,
 	isCurrentBranchProbe,
 	isFeedbackCommand,
+	isFunctionsTemplateCommand,
 	isGitLocalCommand,
 	isInspectDbUrl,
 	isMcpCommand,
@@ -640,6 +641,10 @@ export const ensureAuth = async (
 
 	// `config add` edits the local neon.ts only.
 	if (isConfigAdd(props)) {
+		return;
+	}
+
+	if (isFunctionsTemplateCommand(props)) {
 		return;
 	}
 

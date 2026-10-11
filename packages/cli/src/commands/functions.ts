@@ -29,9 +29,14 @@ import type { BranchScopeProps } from "../types.js";
 import { getCliName } from "../utils/cli_name.js";
 import { branchIdFromProps, fillSingleProject } from "../utils/enrichers.js";
 import { bundleEntry } from "../utils/esbuild.js";
+import {
+	FUNCTION_SLUG_HELP,
+	FUNCTION_SLUG_PATTERN,
+} from "../utils/function_slug.js";
 import { zipBundle } from "../utils/zip.js";
 import { writer } from "../writer.js";
 import { DEPLOY_COMMANDS_EPILOGUE } from "./deploy_help.js";
+import { handleNew, listTemplates } from "./functions_new.js";
 
 const FUNCTION_FIELDS = [
 	"slug",
@@ -104,10 +109,6 @@ const writeDeploymentErrorSection = (
 	}
 };
 
-const SLUG_PATTERN = /^[a-z0-9]{1,20}$/;
-const SLUG_HELP =
-	"Use 1-20 lowercase letters and digits (no hyphens or other characters).";
-
 // A fixed delay for every poll, so tests can poll fast.
 const POLL_INTERVAL_OVERRIDE_MS =
 	Number(process.env.NEON_FUNCTIONS_POLL_INTERVAL_MS) || undefined;
@@ -148,6 +149,82 @@ export const builder = (argv: yargs.Argv) =>
 			},
 		})
 		.middleware(fillSingleProject as any)
+		.command(
+			"new [template]",
+			"Create a function from a Function Registry template",
+			(yargs) =>
+				yargs
+					.strict()
+					.positional("template", {
+						describe:
+							"Template ID (run `neon functions templates list` to see them)",
+						type: "string",
+					})
+					.options({
+						"project-id": { hidden: true },
+						branch: { hidden: true },
+						name: {
+							describe:
+								"Function slug and directory name (defaults to the template ID)",
+							type: "string",
+						},
+						operation: {
+							describe:
+								"Operation to include (repeatable). Without it, a TTY asks and anything else uses the recommended operations.",
+							type: "string",
+							array: true,
+						},
+						"all-operations": {
+							describe:
+								"Include every operation. Conflicts with --operation.",
+							type: "boolean",
+						},
+						yes: {
+							alias: ["y", "default"],
+							describe:
+								"Skip prompts and use the recommended operations",
+							type: "boolean",
+						},
+						dir: {
+							describe:
+								"Destination directory (defaults to functions/<name> next to neon.ts)",
+							type: "string",
+						},
+						force: {
+							describe:
+								"Overwrite differing files and keep an existing neon.ts declaration",
+							type: "boolean",
+						},
+						install: {
+							describe:
+								"Install the template's dependencies. A TTY asks when omitted.",
+							type: "boolean",
+						},
+						"add-to-config": {
+							describe:
+								"Declare the function in neon.ts, creating it when missing. On by default; use --no-add-to-config to skip.",
+							type: "boolean",
+						},
+						config: {
+							describe:
+								"Path to the neon.ts to edit (defaults to the project's neon.ts)",
+							type: "string",
+						},
+					}),
+			(args) => handleNew(args as any),
+		)
+		.command("templates", "Browse Function Registry templates", (yargs) =>
+			yargs.command(
+				"list",
+				"List function templates",
+				(yargs) =>
+					yargs.strict().options({
+						"project-id": { hidden: true },
+						branch: { hidden: true },
+					}),
+				(args) => listTemplates(args as any),
+			),
+		)
 		.command(
 			"deploy <slug>",
 			"Deploy a function from a local directory",
@@ -374,8 +451,10 @@ const deploy = async (props: DeployProps) => {
 	}
 
 	// Cheap, offline validation first - fail before any network round-trip.
-	if (!SLUG_PATTERN.test(props.slug)) {
-		throw new Error(`Invalid function slug "${props.slug}". ${SLUG_HELP}`);
+	if (!FUNCTION_SLUG_PATTERN.test(props.slug)) {
+		throw new Error(
+			`Invalid function slug "${props.slug}". ${FUNCTION_SLUG_HELP}`,
+		);
 	}
 
 	const src = props.src ?? ".";
@@ -695,8 +774,10 @@ const registerDomain = async (
 		slug: string;
 	},
 ) => {
-	if (!SLUG_PATTERN.test(props.slug)) {
-		throw new Error(`Invalid function slug "${props.slug}". ${SLUG_HELP}`);
+	if (!FUNCTION_SLUG_PATTERN.test(props.slug)) {
+		throw new Error(
+			`Invalid function slug "${props.slug}". ${FUNCTION_SLUG_HELP}`,
+		);
 	}
 	const branchId = await branchIdFromProps(props);
 	const registered = await retryOnLock(() =>
