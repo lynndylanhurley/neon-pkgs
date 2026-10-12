@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://raw.githubusercontent.com/neondatabase/neon-pkgs/main/registry/schemas/registry.schema.json",
+	"$id": "https://neon.com/functions/registry/schemas/registry.schema.json",
 	"title": "Neon Function Registry index",
 	"type": "object",
 	"required": ["templates"],

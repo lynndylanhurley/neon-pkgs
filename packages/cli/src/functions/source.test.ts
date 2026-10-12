@@ -7,9 +7,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_REGISTRY_URL,
+	describeRegistrySource,
+	GITHUB_REGISTRY_URL,
 	openRegistry,
 	resolveRegistrySource,
 } from "./source";
@@ -105,5 +107,55 @@ describe("openRegistry from a directory", () => {
 
 	it("reports a missing source", async () => {
 		await expect(loadDemo()).rejects.toThrow(/not found/);
+	});
+});
+
+describe("openRegistry with the default source", () => {
+	const index = JSON.stringify({ templates: [] });
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	beforeEach(() => {
+		vi.stubEnv("NEON_FUNCTION_REGISTRY_DIR", "");
+		vi.stubEnv("NEON_FUNCTION_REGISTRY_URL", "");
+	});
+
+	it("reads the index from neon.com", async () => {
+		const fetch = vi.fn(async (_url: URL) => new Response(index));
+		vi.stubGlobal("fetch", fetch);
+		const registry = await openRegistry();
+		expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+			DEFAULT_REGISTRY_URL,
+		]);
+		expect(describeRegistrySource(registry.source)).toBe(
+			DEFAULT_REGISTRY_URL,
+		);
+	});
+
+	it("falls back to GitHub when neon.com fails", async () => {
+		const fetch = vi.fn(async (url: URL) =>
+			url.href === DEFAULT_REGISTRY_URL
+				? new Response("", { status: 503 })
+				: new Response(index),
+		);
+		vi.stubGlobal("fetch", fetch);
+		const registry = await openRegistry();
+		expect(describeRegistrySource(registry.source)).toBe(
+			GITHUB_REGISTRY_URL,
+		);
+	});
+
+	it("never falls back from an explicit URL", async () => {
+		vi.stubEnv(
+			"NEON_FUNCTION_REGISTRY_URL",
+			"https://example.com/registry.json",
+		);
+		const fetch = vi.fn(async () => new Response("", { status: 503 }));
+		vi.stubGlobal("fetch", fetch);
+		await expect(openRegistry()).rejects.toThrow(/503/);
+		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 });

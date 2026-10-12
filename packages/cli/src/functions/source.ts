@@ -11,8 +11,13 @@ import {
 	type RegistryIndexEntry,
 } from "./registry.js";
 
+// The registry lives in neondatabase/examples (`registry/`). neon.com
+// serves it through a CDN-cached read-through, so listing and scaffolding never
+// spend GitHub's rate limits; raw GitHub is the fallback when neon.com is down.
 export const DEFAULT_REGISTRY_URL =
-	"https://raw.githubusercontent.com/neondatabase/neon-pkgs/main/registry/registry.json";
+	"https://neon.com/functions/registry/registry.json";
+export const GITHUB_REGISTRY_URL =
+	"https://raw.githubusercontent.com/neondatabase/examples/main/registry/registry.json";
 
 export const REGISTRY_DIR_ENV = "NEON_FUNCTION_REGISTRY_DIR";
 export const REGISTRY_URL_ENV = "NEON_FUNCTION_REGISTRY_URL";
@@ -149,9 +154,31 @@ export const templateSourcePaths = (template: FunctionTemplate): string[] =>
 
 const INDEX_FILE = "registry.json";
 
+/**
+ * Open the registry `NEON_FUNCTION_REGISTRY_DIR` / `_URL` names, or else the
+ * default on neon.com, falling back to the GitHub copy when neon.com cannot
+ * serve the index. An explicit source never falls back.
+ */
 export const openRegistry = async (
-	source: RegistrySource = resolveRegistrySource(),
+	source?: RegistrySource,
 ): Promise<Registry> => {
+	if (source) return openRegistryAt(source);
+	const resolved = resolveRegistrySource();
+	if (resolved.kind !== "url" || resolved.url.href !== DEFAULT_REGISTRY_URL) {
+		return openRegistryAt(resolved);
+	}
+	try {
+		return await openRegistryAt(resolved);
+	} catch (error) {
+		if (!(error instanceof RegistryError)) throw error;
+		return openRegistryAt({
+			kind: "url",
+			url: new URL(GITHUB_REGISTRY_URL),
+		});
+	}
+};
+
+const openRegistryAt = async (source: RegistrySource): Promise<Registry> => {
 	const read =
 		source.kind === "dir" ? dirReader(source.dir) : urlReader(source.url);
 	const indexPath =
