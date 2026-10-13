@@ -16,9 +16,7 @@
     "encryptedKey": "empty",
     "aad": "ASCII(base64url(protected))",
     "ivBytes": 12,
-    "tagBytes": 16,
-    "defaultMaxTokenBytes": 262144,
-    "absoluteMaxTokenBytes": 1048576
+    "tagBytes": 16
   },
   "$defs": {
     "databaseName": {
@@ -117,8 +115,7 @@
       "x-invariants": [
         "0 < exp - iat <= 300",
         "iat <= now + 30",
-        "now < exp",
-        "complete Subscribe protobuf payload <= 65536 bytes at request_id = uint64::MAX"
+        "now < exp"
       ]
     }
   }
