@@ -220,12 +220,6 @@ export const commandManifest: CommandEntry[] = [
 		listedOutsideStaging: true,
 	},
 	{
-		command: "subscribe <query>",
-		describe: "Subscribe to a live SQL query with Neon Realtime",
-		load: () => import("./subscribe.js"),
-		stagingOnly: REALTIME_COMING_SOON,
-	},
-	{
 		command: "functions",
 		aliases: ["function"],
 		describe: "Manage Neon Functions",
