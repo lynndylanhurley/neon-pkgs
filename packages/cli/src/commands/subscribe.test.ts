@@ -125,7 +125,7 @@ const props = (
 ): SubscribeProps => ({
 	apiClient: {} as never,
 	apiKey: "api-key",
-	apiHost: "https://console-stage.example/api/v2",
+	apiHost: "https://console-stage.neon.build/api/v2",
 	output,
 	contextFile: "/workspace/.neon",
 	projectId: "project-1",
@@ -241,7 +241,7 @@ describe("subscribe command", () => {
 			projectId: "project-1",
 			branchId: "branch-1",
 			apiKey: "api-key",
-			apiHost: "https://console-stage.example/api/v2",
+			apiHost: "https://console-stage.neon.build/api/v2",
 			services: ["postgres", "realtime"],
 		});
 		expect(setupResult.connectionOptions()).toEqual({

@@ -11,6 +11,7 @@ import type yargs from "yargs";
 import { resolveNeonEnvVars } from "../dev/env.js";
 import type { BranchScopeProps } from "../types.js";
 import { branchIdFromProps } from "../utils/enrichers.js";
+import { assertRealtimeAvailable } from "../utils/staging.js";
 import { writer } from "../writer.js";
 
 type QueryRow = Record<string, unknown>;
@@ -116,6 +117,7 @@ export const subscribe = async (
 	props: SubscribeProps,
 	dependencies: SubscribeDependencies = {},
 ): Promise<void> => {
+	assertRealtimeAvailable(props.apiHost);
 	const resolveBranchId = dependencies.resolveBranchId ?? branchIdFromProps;
 	const resolveEnv = dependencies.resolveEnv ?? resolveNeonEnvVars;
 	const connect = dependencies.connect ?? connectRealtime;

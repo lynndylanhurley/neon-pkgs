@@ -4,6 +4,7 @@ import { retryOnLock } from "../api.js";
 import { log } from "../log.js";
 import type { BranchScopeProps } from "../types.js";
 import { branchIdFromProps, fillSingleProject } from "../utils/enrichers.js";
+import { assertRealtimeAvailable } from "../utils/staging.js";
 import * as subscribeCommand from "./subscribe.js";
 
 export type RealtimeEnableProps = BranchScopeProps & {
@@ -12,6 +13,7 @@ export type RealtimeEnableProps = BranchScopeProps & {
 
 /** Request Realtime provisioning or an allowed-origin update for a branch. */
 export const enable = async (props: RealtimeEnableProps): Promise<void> => {
+	assertRealtimeAvailable(props.apiHost);
 	const realtime =
 		props.allowedOrigins === undefined
 			? true
@@ -34,6 +36,7 @@ export const enable = async (props: RealtimeEnableProps): Promise<void> => {
 
 /** Request Realtime deprovisioning for a branch. */
 export const disable = async (props: BranchScopeProps): Promise<void> => {
+	assertRealtimeAvailable(props.apiHost);
 	const branchId = await branchIdFromProps(props);
 	await retryOnLock(() =>
 		props.apiClient.disableProjectBranchRealtime(props.projectId, branchId),

@@ -92,6 +92,24 @@ describe("staging-only commands", () => {
 		expect(strip(stdout)).not.toMatch(/neon subscribe/);
 	});
 
+	test("realtime lists its commands and options outside staging", async ({
+		testCliCommand,
+	}) => {
+		const { stdout, stderr } = await testCliCommand(
+			["realtime", "--help"],
+			{ snapshot: false },
+		);
+		const text = strip(stdout);
+		expect(text).toContain("Commands:");
+		expect(text).toMatch(/realtime enable/);
+		expect(text).toMatch(/realtime disable/);
+		expect(text).toMatch(/realtime subscribe/);
+		expect(text).toContain("Options:");
+		expect(text).toContain("--project-id");
+		expect(text).toContain("--branch");
+		expect(stderr).toBe("");
+	});
+
 	test("are listed on staging", async ({ testCliCommand }) => {
 		const { stdout } = await testCliCommand(["--help"], {
 			snapshot: false,

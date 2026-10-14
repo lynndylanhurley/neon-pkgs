@@ -3,9 +3,9 @@ import { hideBin, Parser } from "yargs/helpers";
 
 /**
  * Staging-only features ship in a release before their API reaches production. The CLI
- * exposes them only when the API host it sends requests to (`--api-host`, else
- * `NEON_API_HOST`) is Neon's staging console; with production or no host set, they are
- * hidden from help and fail with a "coming soon" message.
+ * allows their operations only when the API host it sends requests to (`--api-host`, else
+ * `NEON_API_HOST`) is Neon's staging console. Features may still expose help outside
+ * staging so users can discover their commands and options.
  */
 export const STAGING_API_HOST = "https://console-stage.neon.build/api/v2";
 
