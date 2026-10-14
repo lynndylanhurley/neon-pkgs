@@ -18,6 +18,8 @@ export type CommandEntry = {
 	 * message. See `utils/staging.ts`.
 	 */
 	stagingOnly?: string;
+	/** List the command in help even while its implementation remains staging-only. */
+	listedOutsideStaging?: boolean;
 };
 
 /**
@@ -215,6 +217,7 @@ export const commandManifest: CommandEntry[] = [
 		describe: "Manage Neon Realtime for a branch",
 		load: () => import("./realtime.js"),
 		stagingOnly: REALTIME_COMING_SOON,
+		listedOutsideStaging: true,
 	},
 	{
 		command: "subscribe <query>",
@@ -410,7 +413,7 @@ const lazyCommand = (entry: CommandEntry) => ({
 const comingSoonCommand = (entry: CommandEntry, message: string) => ({
 	command: `${verbOf(entry)} [args..]`,
 	aliases: entry.aliases,
-	describe: false as const,
+	describe: entry.listedOutsideStaging ? entry.describe : (false as const),
 	// Fail in the builder: the bare-parent help middleware runs before any handler.
 	builder: () => {
 		throw new Error(message);

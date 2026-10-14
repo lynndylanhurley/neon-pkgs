@@ -82,11 +82,14 @@ describe("staging-only commands", () => {
 	// The fixture sends requests to a local mock through --api-host.
 	const staging = { NEON_STAGING_API_HOST: "http://localhost" };
 
-	test("are not listed outside staging", async ({ testCliCommand }) => {
+	test("lists the Realtime group but not its top-level subscribe command outside staging", async ({
+		testCliCommand,
+	}) => {
 		const { stdout } = await testCliCommand(["--help"], {
 			snapshot: false,
 		});
-		expect(strip(stdout)).not.toMatch(/neon (realtime|subscribe)/);
+		expect(strip(stdout)).toMatch(/neon realtime/);
+		expect(strip(stdout)).not.toMatch(/neon subscribe/);
 	});
 
 	test("are listed on staging", async ({ testCliCommand }) => {
