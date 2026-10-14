@@ -148,6 +148,44 @@ describe("openRegistry with the default source", () => {
 		);
 	});
 
+	it("loads template files from GitHub, not neon.com", async () => {
+		const githubBase = new URL(".", GITHUB_REGISTRY_URL).href;
+		const files: Record<string, string> = {
+			[DEFAULT_REGISTRY_URL]: JSON.stringify({
+				templates: [
+					{
+						id: "demo",
+						title: "Demo",
+						description: "A demo.",
+						path: "demo/template.json",
+					},
+				],
+			}),
+			[`${githubBase}demo/template.json`]: JSON.stringify({
+				id: "demo",
+				title: "Demo",
+				description: "A demo.",
+				layout: "router",
+			}),
+			[`${githubBase}demo/functions/index.ts`]: "export default {};\n",
+		};
+		const fetch = vi.fn(async (url: URL) =>
+			url.href in files
+				? new Response(files[url.href])
+				: new Response("Not found\n", { status: 404 }),
+		);
+		vi.stubGlobal("fetch", fetch);
+		const registry = await openRegistry();
+		const [entry] = registry.entries;
+		const { sources } = await registry.load(entry);
+		expect(sources.get("functions/index.ts")).toBe("export default {};\n");
+		expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+			DEFAULT_REGISTRY_URL,
+			`${githubBase}demo/template.json`,
+			`${githubBase}demo/functions/index.ts`,
+		]);
+	});
+
 	it("never falls back from an explicit URL", async () => {
 		vi.stubEnv(
 			"NEON_FUNCTION_REGISTRY_URL",

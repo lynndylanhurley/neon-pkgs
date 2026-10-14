@@ -11,9 +11,10 @@ import {
 	type RegistryIndexEntry,
 } from "./registry.js";
 
-// The registry lives in neondatabase/examples (`registry/`). neon.com
-// serves it through a CDN-cached read-through, so listing and scaffolding never
-// spend GitHub's rate limits; raw GitHub is the fallback when neon.com is down.
+// The registry lives in neondatabase/examples (`registry/`). neon.com serves
+// only the index (and the schemas) through a CDN-cached read-through, so
+// listing never spends GitHub's rate limits. Template files are always read
+// from raw GitHub, which is also where the index comes from when neon.com is down.
 export const DEFAULT_REGISTRY_URL =
 	"https://neon.com/functions/registry/registry.json";
 export const GITHUB_REGISTRY_URL =
@@ -156,8 +157,9 @@ const INDEX_FILE = "registry.json";
 
 /**
  * Open the registry `NEON_FUNCTION_REGISTRY_DIR` / `_URL` names, or else the
- * default on neon.com, falling back to the GitHub copy when neon.com cannot
- * serve the index. An explicit source never falls back.
+ * default: the index from neon.com, falling back to the GitHub copy when
+ * neon.com cannot serve it, and template files from GitHub either way. An
+ * explicit source never falls back and serves its own template files.
  */
 export const openRegistry = async (
 	source?: RegistrySource,
@@ -167,20 +169,27 @@ export const openRegistry = async (
 	if (resolved.kind !== "url" || resolved.url.href !== DEFAULT_REGISTRY_URL) {
 		return openRegistryAt(resolved);
 	}
+	const github: RegistrySource = {
+		kind: "url",
+		url: new URL(GITHUB_REGISTRY_URL),
+	};
 	try {
-		return await openRegistryAt(resolved);
+		return await openRegistryAt(resolved, github);
 	} catch (error) {
 		if (!(error instanceof RegistryError)) throw error;
-		return openRegistryAt({
-			kind: "url",
-			url: new URL(GITHUB_REGISTRY_URL),
-		});
+		return openRegistryAt(github);
 	}
 };
 
-const openRegistryAt = async (source: RegistrySource): Promise<Registry> => {
-	const read =
-		source.kind === "dir" ? dirReader(source.dir) : urlReader(source.url);
+const readerFor = (source: RegistrySource): ReadText =>
+	source.kind === "dir" ? dirReader(source.dir) : urlReader(source.url);
+
+const openRegistryAt = async (
+	source: RegistrySource,
+	files: RegistrySource = source,
+): Promise<Registry> => {
+	const read = readerFor(source);
+	const readFile = files === source ? read : readerFor(files);
 	const indexPath =
 		source.kind === "dir"
 			? INDEX_FILE
@@ -208,7 +217,7 @@ const openRegistryAt = async (source: RegistrySource): Promise<Registry> => {
 		}
 		const template = parse(
 			entry.path,
-			await read(entry.path, MAX_JSON_BYTES),
+			await readFile(entry.path, MAX_JSON_BYTES),
 			(text) => parseTemplateItem(text, entry.id),
 		);
 		const dir = posix.dirname(entry.path);
@@ -220,7 +229,7 @@ const openRegistryAt = async (source: RegistrySource): Promise<Registry> => {
 					`Template "${entry.id}" references an unsafe path: ${path}`,
 				);
 			}
-			const text = await read(
+			const text = await readFile(
 				dir === "." ? path : posix.join(dir, path),
 				Math.min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total),
 			);
