@@ -434,44 +434,9 @@ export const selectTemplateFiles = (
 	return files;
 };
 
-export const githubTarballUrl = (
-	owner: string,
-	repo: string,
-	ref: string,
-): string => `${codeloadBase()}/${owner}/${repo}/tar.gz/${ref}`;
-
-/**
- * Download and gunzip a GitHub repository tarball from `codeload.github.com`.
- * Shared by `neon bootstrap` and the Function Registry installer.
- */
-export const downloadGithubTarball = async (
-	owner: string,
-	repo: string,
-	ref: string,
-): Promise<Buffer> => {
-	const url = githubTarballUrl(owner, repo, ref);
-
-	let gzipped: Buffer;
-	try {
-		const res = await fetch(url, {
-			headers: downloadHeaders(),
-			signal: AbortSignal.timeout(30_000),
-		});
-		if (!res.ok) throw friendlyGithubError(res.status, url);
-		gzipped = Buffer.from(await res.arrayBuffer());
-	} catch (err) {
-		throw err instanceof Error ? err : new Error(String(err));
-	}
-
-	try {
-		return Buffer.from(gunzipSync(new Uint8Array(gzipped)));
-	} catch (err) {
-		throw new Error(
-			`Failed to decompress the template archive from ${url}: ${
-				err instanceof Error ? err.message : String(err)
-			}`,
-		);
-	}
+const tarballUrl = (template: BootstrapTemplate): string => {
+	const { owner, repo, ref } = template.source;
+	return `${codeloadBase()}/${owner}/${repo}/tar.gz/${ref}`;
 };
 
 const friendlyGithubError = (status: number, url: string): Error => {
@@ -497,11 +462,33 @@ const friendlyGithubError = (status: number, url: string): Error => {
 export const downloadTemplate = async (
 	template: BootstrapTemplate,
 ): Promise<TemplateFile[]> => {
+	const url = tarballUrl(template);
+
+	let gzipped: Buffer;
+	try {
+		const res = await fetch(url, {
+			headers: downloadHeaders(),
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (!res.ok) throw friendlyGithubError(res.status, url);
+		gzipped = Buffer.from(await res.arrayBuffer());
+	} catch (err) {
+		throw err instanceof Error ? err : new Error(String(err));
+	}
+
+	let tar: Buffer;
+	try {
+		tar = Buffer.from(gunzipSync(new Uint8Array(gzipped)));
+	} catch (err) {
+		throw new Error(
+			`Failed to decompress the template archive from ${url}: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+	}
+
 	const { owner, repo, ref, subdir } = template.source;
-	const files = selectTemplateFiles(
-		parseTar(await downloadGithubTarball(owner, repo, ref)),
-		subdir,
-	);
+	const files = selectTemplateFiles(parseTar(tar), subdir);
 	if (files.length === 0) {
 		throw new Error(
 			`Template subdirectory "${subdir}" was not found in ${owner}/${repo}@${ref}.`,

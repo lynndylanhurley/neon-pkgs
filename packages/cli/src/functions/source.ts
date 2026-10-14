@@ -1,11 +1,6 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { posix, resolve, sep } from "node:path";
 import {
-	downloadGithubTarball,
-	parseTar,
-	selectTemplateFiles,
-} from "../init/bootstrap.js";
-import {
 	type FunctionTemplate,
 	isContainedRelativePath,
 	MAX_FILE_BYTES,
@@ -16,9 +11,9 @@ import {
 	type RegistryIndexEntry,
 } from "./registry.js";
 
-// Listing reads registry.json from neon.com, like bootstrap.yaml. Installing
-// downloads the examples tarball from GitHub and extracts registry/<id>/.
-// Local NEON_FUNCTION_REGISTRY_DIR still reads the loose files in that folder.
+// The registry lives in neondatabase/examples (`registry/`). neon.com
+// serves it through a CDN-cached read-through, so listing and scaffolding never
+// spend GitHub's rate limits; raw GitHub is the fallback when neon.com is down.
 export const DEFAULT_REGISTRY_URL =
 	"https://neon.com/functions/registry/registry.json";
 export const GITHUB_REGISTRY_URL =
@@ -26,12 +21,6 @@ export const GITHUB_REGISTRY_URL =
 
 export const REGISTRY_DIR_ENV = "NEON_FUNCTION_REGISTRY_DIR";
 export const REGISTRY_URL_ENV = "NEON_FUNCTION_REGISTRY_URL";
-
-export const REGISTRY_GITHUB = {
-	owner: "neondatabase",
-	repo: "examples",
-	ref: "main",
-} as const;
 
 const REGISTRY_TIMEOUT_MS = 10_000;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -211,9 +200,7 @@ const openRegistryAt = async (source: RegistrySource): Promise<Registry> => {
 		parseRegistryIndex,
 	);
 
-	const loadFromDir = async (
-		entry: RegistryIndexEntry,
-	): Promise<LoadedTemplate> => {
+	const load = async (entry: RegistryIndexEntry): Promise<LoadedTemplate> => {
 		if (!entry.path || !isContainedRelativePath(entry.path)) {
 			throw new RegistryError(
 				`Template "${entry.id}" has no valid path.`,
@@ -243,102 +230,5 @@ const openRegistryAt = async (source: RegistrySource): Promise<Registry> => {
 		return { template, sources };
 	};
 
-	let tar: Promise<Buffer> | undefined;
-	const examplesTar = () => {
-		tar ??= downloadGithubTarball(
-			REGISTRY_GITHUB.owner,
-			REGISTRY_GITHUB.repo,
-			REGISTRY_GITHUB.ref,
-		).catch((error) => {
-			tar = undefined;
-			throw error instanceof RegistryError
-				? error
-				: new RegistryError(
-						error instanceof Error ? error.message : String(error),
-					);
-		});
-		return tar;
-	};
-
-	const loadFromGithub = async (
-		entry: RegistryIndexEntry,
-	): Promise<LoadedTemplate> => {
-		if (!entry.path || !isContainedRelativePath(entry.path)) {
-			throw new RegistryError(
-				`Template "${entry.id}" has no valid path.`,
-			);
-		}
-		const folder = posix.dirname(entry.path);
-		if (!isContainedRelativePath(folder)) {
-			throw new RegistryError(
-				`Template "${entry.id}" has no valid path.`,
-			);
-		}
-		const files = selectTemplateFiles(
-			parseTar(await examplesTar()),
-			`registry/${folder}`,
-		);
-		const byPath = new Map<string, Buffer>();
-		for (const file of files) {
-			if (file.kind !== "file") {
-				throw new RegistryError(
-					`Template "${entry.id}" contains a non-file entry: ${file.path}`,
-				);
-			}
-			if (!isContainedRelativePath(file.path)) {
-				throw new RegistryError(
-					`Template "${entry.id}" has an unsafe path: ${file.path}`,
-				);
-			}
-			if (byPath.has(file.path)) {
-				throw new RegistryError(
-					`Template "${entry.id}" lists ${file.path} twice.`,
-				);
-			}
-			byPath.set(file.path, file.bytes);
-		}
-		const templateFile = posix.basename(entry.path);
-		const raw = byPath.get(templateFile);
-		if (!raw) {
-			throw new RegistryError(
-				`Template "${entry.id}" is missing ${templateFile}.`,
-			);
-		}
-		if (raw.length > MAX_JSON_BYTES) {
-			throw tooLarge(templateFile, MAX_JSON_BYTES);
-		}
-		const template = parse(entry.path, raw.toString("utf8"), (text) =>
-			parseTemplateItem(text, entry.id),
-		);
-		const sources = new Map<string, string>();
-		let total = 0;
-		for (const path of templateSourcePaths(template)) {
-			if (!isContainedRelativePath(path)) {
-				throw new RegistryError(
-					`Template "${entry.id}" references an unsafe path: ${path}`,
-				);
-			}
-			const data = byPath.get(path);
-			if (!data) {
-				throw new RegistryError(
-					`Template "${entry.id}" is missing ${path}.`,
-				);
-			}
-			if (data.length > MAX_FILE_BYTES) {
-				throw tooLarge(path, MAX_FILE_BYTES);
-			}
-			total += data.length;
-			if (total > MAX_TOTAL_BYTES) {
-				throw tooLarge(path, MAX_TOTAL_BYTES);
-			}
-			sources.set(path, data.toString("utf8"));
-		}
-		return { template, sources };
-	};
-
-	return {
-		source,
-		entries,
-		load: source.kind === "dir" ? loadFromDir : loadFromGithub,
-	};
+	return { source, entries, load };
 };
