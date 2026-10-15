@@ -58,14 +58,17 @@ export type CreateSupabaseClientStringOptions<SchemaName> = {
  * const { data: items } = await client.from('items').select();
  * ```
  */
+// biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
 export function createClient<Database = any>(
 	config: CreateSupabaseClientConfig<DefaultSchemaName<Database>>,
 ): CreateClientResult<Database, SupabaseAuthAdapterInstance>;
+// biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
 export function createClient<Database = any>(
 	baseUrl: string,
 	options?: CreateSupabaseClientStringOptions<DefaultSchemaName<Database>>,
 ): CreateClientResult<Database, SupabaseAuthAdapterInstance>;
 export function createClient<
+	// biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
 	Database = any,
 	SchemaName extends string & keyof Database = DefaultSchemaName<Database>,
 >(
