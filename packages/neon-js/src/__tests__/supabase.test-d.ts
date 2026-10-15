@@ -33,6 +33,42 @@ describe("supabase createClient — object form", () => {
 	});
 });
 
+describe("supabase createClient — adapter options", () => {
+	const dataApi = { url: "https://data-api.example.com/rest/v1" };
+
+	it("accepts fetchOptions and sessionOptions in the object form", () => {
+		createClient({
+			auth: {
+				url: "https://auth.example.com",
+				fetchOptions: { headers: { Cookie: "a=b" } },
+				sessionOptions: { refetchOnWindowFocus: false },
+			},
+			dataApi,
+		});
+	});
+
+	it("accepts fetchOptions and sessionOptions in the string form", () => {
+		createClient("https://ep-xxx.c-2.us-east-2.aws.neon.build/db", {
+			auth: {
+				fetchOptions: { headers: { Cookie: "a=b" } },
+				sessionOptions: { refetchOnWindowFocus: false },
+			},
+		});
+	});
+
+	it("rejects unknown auth keys", () => {
+		// @ts-expect-error not an adapter option
+		createClient({
+			auth: { url: "https://auth.example.com", notAnOption: true },
+			dataApi,
+		});
+		createClient("https://ep-xxx.c-2.us-east-2.aws.neon.build/db", {
+			// @ts-expect-error not an adapter option
+			auth: { notAnOption: true },
+		});
+	});
+});
+
 describe("supabase createClient — string form", () => {
 	const client = createClient(
 		"https://ep-xxx.c-2.us-east-2.aws.neon.build/db",

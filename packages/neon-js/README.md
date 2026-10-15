@@ -143,6 +143,18 @@ await client.auth.signInWithPassword({
 const { data: session } = await client.auth.getSession();
 ```
 
+Auth config also accepts the `SupabaseAuthAdapter` options (`fetchOptions`, `sessionOptions`, ...). For example, a server can forward the incoming request cookie:
+
+```typescript
+const client = createClient<Database>({
+  auth: {
+    url: process.env.NEON_AUTH_URL!,
+    fetchOptions: { headers: { Cookie: request.headers.get('cookie') ?? '' } },
+  },
+  dataApi: { url: process.env.NEON_DATA_API_URL! },
+});
+```
+
 The main `createClient` no longer accepts `SupabaseAuthAdapter`. If you already import it, switch to `@neon/neon-js/supabase` and drop the `adapter` option. `SupabaseAuthAdapter` itself is still exported from `@neon/neon-js/auth/vanilla/adapters`.
 
 #### BetterAuthReactAdapter (React Hooks)

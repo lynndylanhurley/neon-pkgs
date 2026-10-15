@@ -1,6 +1,7 @@
 import {
 	SupabaseAuthAdapter,
 	type SupabaseAuthAdapterInstance,
+	type SupabaseAuthAdapterOptions,
 } from "@neon/auth/vanilla/adapters";
 import {
 	type CreateClientDataApiConfig,
@@ -10,7 +11,12 @@ import {
 import type { DeriveNeonUrls } from "../client/derive-urls";
 import type { DefaultSchemaName, NeonClient } from "../client/neon-client";
 
-type SupabaseAuthConfig = {
+/**
+ * `url` and `allowAnonymous` configure the client; every other key is forwarded to
+ * `SupabaseAuthAdapter(...)`, e.g. `fetchOptions.headers.Cookie` to forward a request
+ * cookie from a server.
+ */
+type SupabaseAuthConfig = SupabaseAuthAdapterOptions & {
 	/** The auth service URL */
 	url: string;
 	/** Fall back to an anonymous token when there is no user session. */
@@ -66,7 +72,6 @@ export function createClient<
 	arg1: string | CreateSupabaseClientConfig<SchemaName>,
 	arg2?: CreateSupabaseClientStringOptions<SchemaName>,
 ): NeonClient<Database, SchemaName, SupabaseAuthAdapterInstance> {
-	const adapter = SupabaseAuthAdapter();
 	// An `auth` block is always present here, so the implementation never takes its
 	// external-auth branch and the result always carries `.auth`.
 	const client =
@@ -75,18 +80,31 @@ export function createClient<
 					Database,
 					SchemaName,
 					SupabaseAuthAdapterInstance
-				>(arg1, { ...arg2, auth: { ...arg2?.auth, adapter } })
+				>(arg1, { ...arg2, auth: withAdapter(arg2?.auth) })
 			: createClientImpl<
 					Database,
 					SchemaName,
 					SupabaseAuthAdapterInstance
 				>({
 					...arg1,
-					auth: { ...arg1.auth, adapter },
+					auth: withAdapter(arg1.auth),
 				});
 	return client as NeonClient<
 		Database,
 		SchemaName,
 		SupabaseAuthAdapterInstance
 	>;
+}
+
+function withAdapter<T extends Partial<SupabaseAuthConfig>>(
+	auth: T | undefined,
+) {
+	const { url, allowAnonymous, ...adapterOptions } = auth ?? {};
+	return {
+		url,
+		allowAnonymous,
+		adapter: SupabaseAuthAdapter(adapterOptions),
+	} as Omit<T, keyof SupabaseAuthAdapterOptions> & {
+		adapter: ReturnType<typeof SupabaseAuthAdapter>;
+	};
 }

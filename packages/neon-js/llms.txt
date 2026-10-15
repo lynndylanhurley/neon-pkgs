@@ -106,6 +106,9 @@ const client = createClient<Database>({
 
 await client.auth.signInWithPassword({ email, password });
 const { data: session } = await client.auth.getSession();
+
+// Supabase adapter options (fetchOptions, sessionOptions, ...) go on the auth config, e.g. to forward a request cookie on a server:
+// auth: { url, fetchOptions: { headers: { Cookie: request.headers.get('cookie') ?? '' } } }
 ```
 
 ```typescript
