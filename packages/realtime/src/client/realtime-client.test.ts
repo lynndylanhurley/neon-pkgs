@@ -1227,19 +1227,20 @@ describe("RealtimeClient", () => {
 		client.close();
 	});
 
-	it("replaces a raw subscription across envelope versions", async () => {
+	it("replaces a raw subscription across future envelope versions", async () => {
 		useFakeWebSocket();
 		const client = createRealtimeClient({ url: "ws://live.test/v1" });
-		const subscription = client.subscribe(query("initial"), {
-			materialize: false,
-		});
+		const subscription = client.subscribe(
+			query("initial", "22".repeat(32), 2),
+			{ materialize: false },
+		);
 		const updates: unknown[] = [];
 		subscription.onUpdate((update) => updates.push(update));
 		const socket = connectAndAdmit();
 		baselineSync(socket, "before");
 
 		const renewal = subscription.renew(
-			query("replacement", "22".repeat(32), 2),
+			query("replacement", "33".repeat(32), 3),
 		);
 		socket.receive({
 			type: "subscribed",
@@ -1749,7 +1750,7 @@ function publication(
 function query(
 	capabilityId: string,
 	queryFingerprint = QUERY_FINGERPRINT,
-	version?: 2,
+	version?: number,
 ): SealedLiveQuery<MessageRow> {
 	return {
 		...(version === undefined ? {} : { version }),

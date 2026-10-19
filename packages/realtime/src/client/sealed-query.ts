@@ -8,10 +8,10 @@
  */
 export interface SealedLiveQuery<Row> {
 	/**
-	 * Version of the public sealed-query envelope. An omitted version identifies
-	 * the legacy envelope.
+	 * Positive integer version of the public sealed-query envelope. An omitted
+	 * version identifies the legacy envelope.
 	 */
-	readonly version?: 2;
+	readonly version?: number;
 	/** Opaque encrypted bearer capability. */
 	readonly capability: string;
 	/** Stable identity used to prevent accidentally renewing a different query. */
@@ -28,7 +28,8 @@ export interface SealedLiveQuery<Row> {
 export function validateSealedQuery<Row>(query: SealedLiveQuery<Row>): void {
 	if (
 		!query ||
-		(query.version !== undefined && query.version !== 2) ||
+		(query.version !== undefined &&
+			(!Number.isSafeInteger(query.version) || query.version <= 0)) ||
 		typeof query.capability !== "string" ||
 		!validCompactJweHeader(query.capability) ||
 		typeof query.queryFingerprint !== "string" ||
@@ -43,7 +44,7 @@ export function validateSealedQuery<Row>(query: SealedLiveQuery<Row>): void {
 /** @internal Normalize the legacy omitted version to its envelope version. */
 export function sealedQueryEnvelopeVersion<Row>(
 	query: SealedLiveQuery<Row>,
-): 1 | 2 {
+): number {
 	return query.version ?? 1;
 }
 

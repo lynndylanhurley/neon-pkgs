@@ -89,20 +89,25 @@ describe("sealed query row types", () => {
 });
 
 describe("sealed query envelope versions", () => {
-	it("accepts the legacy omitted version and version 2", () => {
+	it("accepts the legacy omitted version and future positive versions", () => {
 		expect(() => validateSealedQuery(sealedQuery())).not.toThrow();
-		expect(() =>
-			validateSealedQuery({ ...sealedQuery(), version: 2 }),
-		).not.toThrow();
+		for (const version of [1, 2, 3, Number.MAX_SAFE_INTEGER]) {
+			expect(() =>
+				validateSealedQuery({ ...sealedQuery(), version }),
+			).not.toThrow();
+		}
 	});
 
 	it.each([
 		0,
-		1,
-		3,
+		-1,
+		1.5,
+		Number.MAX_SAFE_INTEGER + 1,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
 		"2",
 		null,
-	])("rejects unsupported version %j", (version) => {
+	])("rejects malformed version %j", (version) => {
 		expect(() =>
 			validateSealedQuery({
 				...sealedQuery(),
