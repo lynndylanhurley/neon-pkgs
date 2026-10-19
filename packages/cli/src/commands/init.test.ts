@@ -2014,6 +2014,81 @@ describe("init handler", () => {
 	});
 });
 
+describe("init funnel failures", () => {
+	test("the end event names the failed step and reason, and the error joins the run", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-funnel-fail-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const { handler } = await import("./init.js");
+		const { trackEvent } = await import("../analytics.js");
+		const { toolingContextOf } = await import("../tooling_error.js");
+		vi.mocked(trackEvent).mockClear();
+		const operations = makeOperations();
+		operations.installPlugins.mockRejectedValue(
+			new Error("EACCES: permission denied, open '/x/plugin.json'"),
+		);
+
+		const failure = await handler(
+			baseProps({
+				cwd,
+				operations,
+				yes: true,
+				link: false,
+				config: false,
+				analytics: true,
+				contextFile: join(cwd, ".neon"),
+				detectProjectAgents: () => ["cursor"],
+			}),
+		).catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(Error);
+		const end = vi
+			.mocked(trackEvent)
+			.mock.calls.find((call) => call[0] === "cli_init_end");
+		expect(end?.[1]).toEqual(
+			expect.objectContaining({
+				outcome: "error",
+				failed_step: "plugins",
+				error_kind: "permission_denied",
+			}),
+		);
+		expect(toolingContextOf(failure)?.initRunId).toBe(
+			(end?.[1] as { init_run_id: string }).init_run_id,
+		);
+	});
+
+	test("a run that succeeds reports no failure", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-funnel-ok-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const { handler } = await import("./init.js");
+		const { trackEvent } = await import("../analytics.js");
+		vi.mocked(trackEvent).mockClear();
+
+		await handler(
+			baseProps({
+				cwd,
+				operations: makeOperations(),
+				yes: true,
+				link: false,
+				config: false,
+				analytics: true,
+				contextFile: join(cwd, ".neon"),
+				detectProjectAgents: () => ["cursor"],
+			}),
+		);
+
+		const end = vi
+			.mocked(trackEvent)
+			.mock.calls.find((call) => call[0] === "cli_init_end");
+		expect(end?.[1]).toEqual(
+			expect.objectContaining({
+				outcome: "success",
+				failed_step: null,
+				error_kind: null,
+			}),
+		);
+	});
+});
+
 describe("init CLI", () => {
 	cliTest("help describes the orchestrator", async ({ testCliCommand }) => {
 		const { stdout, stderr } = await testCliCommand(["init", "--help"], {
