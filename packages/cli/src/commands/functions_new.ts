@@ -106,7 +106,6 @@ export type ScaffoldFromTemplateResult =
 				changes: string[];
 			};
 			dependencies: string[];
-			/** Everything the install step covers: missing config packages, then `dependencies`. */
 			packages: string[];
 			packageManager: PackageManager;
 			installed: boolean;
@@ -114,7 +113,6 @@ export type ScaffoldFromTemplateResult =
 			environment: string[];
 			envExample?: { path: string; added: string[] };
 			nextSteps: string[];
-			/** Short command-first lines for the human summary's `Next:` block. */
 			next: string[];
 	  };
 
