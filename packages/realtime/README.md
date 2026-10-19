@@ -366,20 +366,12 @@ Parser configuration is runtime-only; it does not rewrite the `Row` type in a
 row types consistent with the selected parser preset and overrides.
 
 Applications obtain a replacement capability through the same backend endpoint
-and call `subscription.renew(replacement)`. `SealedLiveQuery.version` identifies
-the public sealed-query envelope. Server-issued sealed queries use version 2;
-an absent version identifies the legacy version 1. Version 2 protects the
-public query fingerprint with a server-side key, so applications should treat
-it as an opaque identity. The SDK rejects a replacement with the same envelope
-version and a different public query fingerprint. When the envelope version
-changes, it opens a fresh wire subscription behind the same public subscription
-object instead. Existing listeners, pending transaction waits, and the last
-complete result remain in place while the fresh baseline loads.
-
-If the previous capability has already expired, the subscription remains
-`stale` until `renew()` is called. Calling it moves the subscription to
-`connecting`. Its next complete result replaces the retained rows and returns
-it to `live`.
+and call `subscription.renew(replacement)`. The SDK rejects a replacement for a
+different query by comparing its public query fingerprint. If the previous
+capability has already expired, the subscription remains `stale` until `renew()`
+is called. Calling it moves the subscription to `connecting` and opens a new
+subscription behind the same public object. Its next complete result replaces
+the retained rows and returns it to `live`.
 
 After a mutation returns its PostgreSQL transaction ID, use `awaitTxId()` to
 wait until that transaction has been applied to this subscription:
