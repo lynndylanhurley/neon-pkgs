@@ -368,14 +368,11 @@ row types consistent with the selected parser preset and overrides.
 Applications obtain a replacement capability through the same backend endpoint
 and call `subscription.renew(replacement)`. `SealedLiveQuery.version` identifies
 the public sealed-query envelope; its absence means the legacy version 1. The
-SDK accepts future positive integer versions: it only compares envelope
-versions rather than interpreting a version it does not know. A replacement
-with the same version must have the same public query fingerprint. When the
-version changes, the SDK opens a fresh wire subscription behind the same public
-subscription object instead. This remains forward-compatible while future
-envelopes retain the common `capability`, `queryFingerprint`, and `expiresAt`
-fields. Existing listeners, pending transaction waits, and the last complete
-result remain in place while the fresh baseline loads.
+SDK rejects a replacement with the same envelope version and a different public
+query fingerprint. When the envelope version changes, it opens a fresh wire
+subscription behind the same public subscription object instead. Existing
+listeners, pending transaction waits, and the last complete result remain in
+place while the fresh baseline loads.
 
 If the previous capability has already expired, the subscription remains
 `stale` until `renew()` is called. Calling it moves the subscription to
