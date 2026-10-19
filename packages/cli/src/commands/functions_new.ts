@@ -68,7 +68,7 @@ type OutputProps = Pick<BranchScopeProps, "output">;
 
 export type ScaffoldFromTemplateOptions = {
 	template: string;
-	name?: string;
+	slug?: string;
 	operations?: string[];
 	allOperations?: boolean;
 	dir?: string;
@@ -227,8 +227,8 @@ export const scaffoldFromTemplate = async (
 		operations = picked;
 	}
 
-	const name = options.name ?? deriveFunctionSlug(template.id);
-	const plan = planScaffold(loaded, operations, name);
+	const slug = options.slug ?? deriveFunctionSlug(template.id);
+	const plan = planScaffold(loaded, operations, slug);
 
 	const location = {
 		cwd,
@@ -241,7 +241,7 @@ export const scaffoldFromTemplate = async (
 	const projectRoot = dirname(configPath);
 	const targetDir = options.dir
 		? resolve(cwd, options.dir)
-		: join(projectRoot, "functions", name);
+		: join(projectRoot, "functions", slug);
 	const directory = displayPath(targetDir, cwd);
 
 	const collisions = collidingFiles(targetDir, plan.files);
@@ -269,7 +269,7 @@ export const scaffoldFromTemplate = async (
 		!options.force
 	) {
 		throw new Error(
-			`${displayPath(configPath, cwd)} already declares ${registration.alreadyDeclared.join(", ")}. Pass --name to pick another slug, --force to keep the declaration and overwrite the files, or --no-add-to-config.`,
+			`${displayPath(configPath, cwd)} already declares ${registration.alreadyDeclared.join(", ")}. Pass --slug to pick another one, --force to keep the declaration and overwrite the files, or --no-add-to-config.`,
 		);
 	}
 
@@ -537,7 +537,7 @@ export const handleNew = async (props: NewFunctionProps): Promise<void> => {
 	}
 	const result = await scaffoldFromTemplate({
 		template,
-		name: props.name,
+		slug: props.slug,
 		operations: props.operation,
 		allOperations: props.allOperations,
 		dir: props.dir,

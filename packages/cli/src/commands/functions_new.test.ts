@@ -138,7 +138,7 @@ describe("functions new", () => {
 		const second = await run({
 			template: "mailer",
 			operations: ["cancel"],
-			name: "mailer2",
+			slug: "mailer2",
 		});
 		expect(read(".env.example")).toBe(expected);
 		expect(second).not.toHaveProperty("envExample");

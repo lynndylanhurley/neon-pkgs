@@ -163,9 +163,9 @@ export const builder = (argv: yargs.Argv) =>
 					.options({
 						"project-id": { hidden: true },
 						branch: { hidden: true },
-						name: {
+						slug: {
 							describe:
-								"Function slug and directory name (defaults to the template ID)",
+								"Function slug, also used as the directory name. Defaults to the template ID",
 							type: "string",
 						},
 						operation: {
@@ -187,7 +187,7 @@ export const builder = (argv: yargs.Argv) =>
 						},
 						dir: {
 							describe:
-								"Destination directory (defaults to functions/<name> next to neon.ts)",
+								"Destination directory (defaults to functions/<slug> next to neon.ts)",
 							type: "string",
 						},
 						force: {
@@ -207,7 +207,7 @@ export const builder = (argv: yargs.Argv) =>
 						},
 						config: {
 							describe:
-								"Path to the neon.ts to edit (defaults to the project's neon.ts)",
+								"Path to the neon.ts to edit (defaults to the neon.ts next to .neon, or in cwd without one; created there when missing)",
 							type: "string",
 						},
 					}),
