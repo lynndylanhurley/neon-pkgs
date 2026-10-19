@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 
 import { isNetworkError } from "./errors.js";
@@ -114,7 +115,7 @@ export const classifyToolingError = (
 	if (/EACCES|EPERM|permission denied|operation not permitted/i.test(text)) {
 		return "permission_denied";
 	}
-	if (/\bE403\b|\b403\b|forbidden/i.test(text)) {
+	if (/\bE403\b|\b403\s+Forbidden\b|\bHTTP\s*403\b|forbidden/i.test(text)) {
 		return "registry_blocked";
 	}
 	if (
@@ -135,11 +136,65 @@ export const classifyToolingError = (
 };
 
 const DETAIL_MAX = 500;
+const STACK_MAX = 2000;
 const ESC = String.fromCharCode(27);
 const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[ -/]*[@-~]`, "g");
 
 const escapeRegExp = (text: string): string =>
 	text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The ways `path` can show up in text: as given, with either slash, and fully resolved. */
+const pathForms = (path: string): string[] => {
+	const forms = new Set([
+		path,
+		path.replace(/\\/g, "/"),
+		path.replace(/\//g, "\\"),
+	]);
+	try {
+		forms.add(realpathSync(path));
+	} catch {
+		// Gone or unreadable: the other forms still apply.
+	}
+	return [...forms].filter((form) => form.length > 1);
+};
+
+/** Replaces the working directory with `.` and the home directory with `~`. */
+const scrubPaths = (text: string): string => {
+	let out = text;
+	for (const [path, replacement] of [
+		[process.cwd(), "."],
+		[homedir(), "~"],
+	] as const) {
+		for (const form of pathForms(path).sort(
+			(a, b) => b.length - a.length,
+		)) {
+			// Not followed by a name character, so `/work/app` leaves `/work/app-old` alone.
+			out = out.replace(
+				new RegExp(
+					`${escapeRegExp(form)}(?![\\w-])`,
+					process.platform === "win32" ? "gi" : "g",
+				),
+				replacement,
+			);
+		}
+	}
+	return out;
+};
+
+const SECRET_KEY = "[\\w.-]*(?:token|secret|passw(?:or)?d|api[_-]?key)[\\w.-]*";
+const SECRET_ASSIGNMENT = new RegExp(
+	`(${SECRET_KEY}["']?\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s"',;]+)`,
+	"gi",
+);
+
+const redactSecrets = (text: string): string =>
+	text
+		.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, "//<redacted>@")
+		.replace(/\bnapi_[A-Za-z0-9_-]+/g, "napi_<redacted>")
+		.replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/g, "<redacted>")
+		.replace(/\bnpm_[A-Za-z0-9]{20,}/g, "<redacted>")
+		.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 <redacted>")
+		.replace(SECRET_ASSIGNMENT, "$1<redacted>");
 
 /**
  * Makes error text safe and small enough to send: no colour codes, no home directory or
@@ -149,25 +204,26 @@ const escapeRegExp = (text: string): string =>
  * Exported for tests.
  */
 export const sanitizeErrorDetail = (text: string): string => {
-	let out = text.replace(ANSI, "");
-	for (const [path, replacement] of [
-		[process.cwd(), "."],
-		[homedir(), "~"],
-	] as const) {
-		if (path.length > 1) {
-			out = out.replace(new RegExp(escapeRegExp(path), "g"), replacement);
-		}
-	}
-	out = out
-		.replace(/\bnapi_[A-Za-z0-9_-]+/g, "napi_<redacted>")
-		.replace(/\bBearer\s+\S+/gi, "Bearer <redacted>")
-		.replace(/\/\/[^/@\s]+:[^/@\s]+@/g, "//<redacted>@")
-		.replace(
-			/\b(api[_-]?key|token|secret|password)(["']?\s*[=:]\s*["']?)[^\s"',;]+/gi,
-			"$1$2<redacted>",
-		)
-		.trim();
+	const out = redactSecrets(scrubPaths(text.replace(ANSI, ""))).trim();
 	return out.length > DETAIL_MAX ? `…${out.slice(-DETAIL_MAX)}` : out;
+};
+
+/**
+ * The stack with `message` swapped for its sanitized form, the same scrubbing applied to the
+ * frames (whose paths carry the user's directories), and the same kind of bound.
+ */
+const sanitizeStack = (
+	stack: string,
+	message: string,
+	sanitizedMessage: string,
+): string => {
+	// A replacer function, because the sanitized text may contain `$&` and the like.
+	const swapped =
+		message.length > 0 && stack.includes(message)
+			? stack.replace(message, () => sanitizedMessage)
+			: stack;
+	const out = redactSecrets(scrubPaths(swapped.replace(ANSI, "")));
+	return out.length > STACK_MAX ? `${out.slice(0, STACK_MAX)}…` : out;
 };
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -192,10 +248,16 @@ export const toolingErrorProperties = (
 	if (context === undefined) {
 		return undefined;
 	}
-	const message = sanitizeErrorDetail(error.message);
+	// The retry command isn't the cause, and a long one would push the cause out of the bound.
+	const message = sanitizeErrorDetail(
+		error.message.replace(/\n?Retry with: [\s\S]*$/, ""),
+	);
 	return {
 		message,
-		stack: error.stack?.replace(error.message, message),
+		stack:
+			error.stack === undefined
+				? undefined
+				: sanitizeStack(error.stack, error.message, message),
 		command,
 		step: context.step,
 		errorKind: classifyToolingError(error, context),

@@ -348,7 +348,7 @@ describe("getErrorAnalyticsEventProperties tooling errors", () => {
 	const context = {
 		version: "2.0.0",
 		ci: false,
-		agent: null,
+		agent: "codex" as const,
 		command: "init",
 	};
 

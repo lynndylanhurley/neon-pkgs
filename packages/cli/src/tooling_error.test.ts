@@ -24,11 +24,24 @@ describe("classifyToolingError", () => {
 		],
 		["EACCES: permission denied, open '/x/mcp.json'", "permission_denied"],
 		["npm error code E403\nnpm error 403 Forbidden", "registry_blocked"],
+		[
+			"GET https://registry.npmjs.org/skills - 403 Forbidden",
+			"registry_blocked",
+		],
 		["getaddrinfo ENOTFOUND registry.npmjs.org", "network"],
 		["Unexpected token } in JSON at position 4", "invalid_config"],
 		["something nobody planned for", "unknown"],
 	])("reads %j as %s", (message, kind) => {
 		expect(classifyToolingError(new Error(message), undefined)).toBe(kind);
+	});
+
+	it("does not read an unrelated number 403 as a blocked registry", () => {
+		expect(
+			classifyToolingError(
+				new Error("wrote 403 files on port 4030"),
+				undefined,
+			),
+		).toBe("unknown");
 	});
 
 	it("reads a timed out child as a timeout, whatever it printed", () => {
@@ -145,6 +158,32 @@ describe("sanitizeErrorDetail", () => {
 		expect(out).toContain("Bearer <redacted>");
 	});
 
+	it("redacts the credential shapes registries and CI print", () => {
+		const out = sanitizeErrorDetail(
+			[
+				"//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123",
+				"clone with ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+				"Authorization: Basic dXNlcjpwYXNz",
+				'{"password": "p 4 ss word"}',
+			].join("\n"),
+		);
+		expect(out).not.toMatch(
+			/abcdefghijklmnopqrstuvwxyz|dXNlcjpwYXNz|p 4 ss word/,
+		);
+	});
+
+	it("leaves a path that only shares a prefix with the working directory alone", () => {
+		const cwd = process.cwd();
+		const out = sanitizeErrorDetail(`${cwd}-old/x and ${cwd}/y`);
+		// The sibling keeps its name (only the home directory above it is hidden).
+		expect(out).toBe(`${cwd.replace(homedir(), "~")}-old/x and ./y`);
+	});
+
+	it("hides the home directory written with the other slash", () => {
+		const other = homedir().replace(/\//g, "\\");
+		expect(sanitizeErrorDetail(`open ${other}\\x`)).not.toContain(other);
+	});
+
 	it("keeps the end of long output, where a failed child puts the cause", () => {
 		const out = sanitizeErrorDetail(
 			`${"progress ".repeat(500)}the real cause`,
@@ -199,6 +238,35 @@ describe("toolingErrorProperties", () => {
 		expect(String(properties?.message).length).toBeLessThanOrEqual(501);
 		expect(String(properties?.message)).not.toContain(homedir());
 		expect(String(properties?.stack)).not.toContain("x".repeat(600));
+	});
+
+	it("keeps the stack readable when the message contains replacement patterns", () => {
+		const error = new Error("child said $& and $' and $` and $$");
+		attachToolingContext(error, { step: "skills" });
+		const properties = toolingErrorProperties(error, "skills");
+		expect(String(properties?.stack)).toContain(
+			"child said $& and $' and $` and $$",
+		);
+	});
+
+	it("scrubs and bounds the stack frames, not just the message", () => {
+		const error = new Error("boom");
+		attachToolingContext(error, { step: "skills" });
+		error.stack = `Error: boom\n${`    at fn (${process.cwd()}/src/x.ts:1:1)\n`.repeat(400)}`;
+		const stack = String(toolingErrorProperties(error, "skills")?.stack);
+		expect(stack).not.toContain(process.cwd());
+		expect(stack).toContain("at fn (./src/x.ts:1:1)");
+		expect(stack.length).toBeLessThanOrEqual(2001);
+	});
+
+	it("drops the retry command so it can't push the cause out of the bound", () => {
+		const error = new Error(
+			`skills CLI failed:\nnpm error code E403\nRetry with: neon skills ${"--skill x ".repeat(200)}`,
+		);
+		attachToolingContext(error, { step: "skills" });
+		expect(toolingErrorProperties(error, "skills")?.message).toBe(
+			"skills CLI failed:\nnpm error code E403",
+		);
 	});
 
 	it("drops agent and skill names that aren't plain ids", () => {
