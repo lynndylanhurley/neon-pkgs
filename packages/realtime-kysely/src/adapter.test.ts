@@ -47,7 +47,7 @@ describe("Kysely query adapter", () => {
 		const channelId = "general";
 		const query = db
 			.selectFrom("messages")
-			.select(["id", "body", "note"])
+			.select(["id", "body", "note", "sent_at"])
 			.where("channel_id", "=", channelId);
 
 		const sealedQuery = await realtime.seal({ query });
@@ -57,12 +57,13 @@ describe("Kysely query adapter", () => {
 				id: number;
 				body: string;
 				note: string | null;
+				sent_at: Date;
 			}>
 		>();
 		expect(JSON.stringify(sealedQuery)).not.toContain(channelId);
 		const prepared = kyselyAdapter().prepare(query);
 		expect(prepared.sql).toBe(
-			'select "id", "body", "note" from "messages" where "channel_id" = $1',
+			'select "id", "body", "note", "sent_at" from "messages" where "channel_id" = $1',
 		);
 		expect(prepared.parameters).toEqual([{ typeOid: 0, value: channelId }]);
 	});
@@ -134,15 +135,32 @@ describe("Kysely query adapter", () => {
 		);
 	});
 
-	it("rejects non-select operation nodes at runtime", () => {
+	it("forwards aggregate query shapes to the Realtime proxy", () => {
+		const db = createDatabase<Database>();
+		const distinct = db.selectFrom("messages").select("body").distinct();
+		const grouped = db
+			.selectFrom("messages")
+			.select(["body", sql<number>`count(*)`.as("count")])
+			.groupBy("body")
+			.having(sql<number>`count(*)`, ">", 1);
+
+		expect(kyselyAdapter().prepare(distinct).sql).toContain(
+			"select distinct",
+		);
+		expect(kyselyAdapter().prepare(grouped).sql).toMatch(
+			/group by .* having /,
+		);
+	});
+
+	it("leaves operation validation to the Realtime proxy", () => {
 		const db = createDatabase<Database>();
 		const update = db
 			.updateTable("messages")
 			.set({ body: "changed" })
 			.where("id", "=", 1);
 
-		expect(() => kyselyAdapter().prepare(update as never)).toThrow(
-			"requires a concrete select builder",
+		expect(kyselyAdapter().prepare(update as never).sql).toBe(
+			'update "messages" set "body" = $1 where "id" = $2',
 		);
 	});
 });

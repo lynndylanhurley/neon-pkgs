@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
 
 import type {
-	LiveQueryBatchInfo,
-	LiveQueryChange,
 	LiveQuerySnapshot,
 	LiveQueryState,
 	MaterializedLiveQuerySubscription,
-	RawLiveQueryRow,
 	RawLiveQuerySubscription,
+	RawLiveQueryUpdate,
 	RealtimeClient,
 	RealtimeLogEntry,
 	SealedLiveQuery,
@@ -20,6 +18,7 @@ import {
 	RealtimeProvider,
 	type UseLiveQueryResult,
 	useLiveQuery,
+	useRealtimeClient,
 } from "./index.js";
 
 interface MessageRow {
@@ -50,9 +49,9 @@ describe("Realtime React integration", () => {
 			if (!observed)
 				throw new Error("Expected the live query hook to render");
 			const { utils } = observed;
-			const onBatch = vi.fn();
+			const onUpdate = vi.fn();
 			const onChange = vi.fn();
-			utils.onBatch(onBatch);
+			utils.onUpdate(onUpdate);
 			utils.onChange(onChange);
 			observe.mockClear();
 			const pending = utils.awaitTxId("42");
@@ -64,7 +63,7 @@ describe("Realtime React integration", () => {
 				await pending;
 			});
 			await expect(utils.awaitTxId("41")).resolves.toBeUndefined();
-			expect(onBatch).not.toHaveBeenCalled();
+			expect(onUpdate).not.toHaveBeenCalled();
 			expect(onChange).not.toHaveBeenCalled();
 			expect(observe).not.toHaveBeenCalled();
 			expect(screen.getByText("live:before")).toBeTruthy();
@@ -103,7 +102,7 @@ describe("Realtime React integration", () => {
 				await followingNoOp;
 			});
 			expect(screen.getByText("live:after")).toBeTruthy();
-			expect(onBatch).toHaveBeenCalledOnce();
+			expect(onUpdate).toHaveBeenCalledOnce();
 			expect(onChange).toHaveBeenCalledOnce();
 
 			const cancelled = expect(utils.awaitTxId("100")).rejects.toThrow(
@@ -131,7 +130,7 @@ describe("Realtime React integration", () => {
 			</RealtimeProvider>,
 		);
 
-		expect(screen.getByText("stale:server")).toBeTruthy();
+		expect(screen.getByText("connecting:server")).toBeTruthy();
 		expectTypeOf(observed).toEqualTypeOf<
 			UseLiveQueryResult<MessageRow> | undefined
 		>();
@@ -227,7 +226,7 @@ describe("Realtime React integration", () => {
 			await eventually(() => expect(refreshQuery).toHaveBeenCalledOnce());
 		});
 		expect(client.latest().renewals).toEqual([replacement]);
-		expect(screen.getByText("stale:none")).toBeTruthy();
+		expect(screen.getByText("connecting:none")).toBeTruthy();
 	});
 
 	it("uses the subscription diagnostic context for query refreshes", async () => {
@@ -307,11 +306,92 @@ describe("Realtime React integration", () => {
 			</RealtimeProvider>,
 		);
 
-		expect(html).toContain("stale");
+		expect(html).toContain("connecting");
 		expect(html).toContain("server");
 		expect(client.subscriptions).toHaveLength(0);
 	});
+
+	it("throws outside a provider", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		expect(() => render(<Messages query={query("query-1")} />)).toThrow(
+			"useLiveQuery requires a RealtimeProvider",
+		);
+	});
 });
+
+describe("useRealtimeClient", () => {
+	it("returns the client passed to the provider", () => {
+		const client = new TestClient<MessageRow>();
+		const observe = vi.fn();
+		render(
+			<RealtimeProvider client={client}>
+				<ClientReader observe={observe} />
+			</RealtimeProvider>,
+		);
+
+		expect(observe).toHaveBeenCalledOnce();
+		expect(observe.mock.lastCall?.[0]).toBe(client);
+	});
+
+	it("reads the nearest provider", () => {
+		const outer = new TestClient<MessageRow>();
+		const inner = new TestClient<MessageRow>();
+		const observeOuter = vi.fn();
+		const observeInner = vi.fn();
+		render(
+			<RealtimeProvider client={outer}>
+				<ClientReader observe={observeOuter} />
+				<RealtimeProvider client={inner}>
+					<ClientReader observe={observeInner} />
+				</RealtimeProvider>
+			</RealtimeProvider>,
+		);
+
+		expect(observeOuter.mock.lastCall?.[0]).toBe(outer);
+		expect(observeInner.mock.lastCall?.[0]).toBe(inner);
+	});
+
+	it("returns the same client across re-renders", () => {
+		const client = new TestClient<MessageRow>();
+		const observe = vi.fn();
+		const view = render(
+			<RealtimeProvider client={client}>
+				<ClientReader observe={observe} label="first" />
+			</RealtimeProvider>,
+		);
+		view.rerender(
+			<RealtimeProvider client={client}>
+				<ClientReader observe={observe} label="second" />
+			</RealtimeProvider>,
+		);
+
+		expect(screen.getByText("second")).toBeTruthy();
+		expect(observe).toHaveBeenCalledTimes(2);
+		for (const [observed] of observe.mock.calls) {
+			expect(observed).toBe(client);
+		}
+	});
+
+	it("throws outside a provider", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		expect(() => render(<ClientReader observe={vi.fn()} />)).toThrow(
+			"useRealtimeClient requires a RealtimeProvider",
+		);
+	});
+});
+
+function ClientReader({
+	observe,
+	label = "client",
+}: {
+	observe: (client: RealtimeClient) => void;
+	label?: string;
+}) {
+	observe(useRealtimeClient());
+	return <span>{label}</span>;
+}
 
 function Messages({
 	query: currentQuery,
@@ -450,14 +530,8 @@ class TestSubscription<Row> implements MaterializedLiveQuerySubscription<Row> {
 		(snapshot: LiveQuerySnapshot<Row>) => void
 	>();
 	private stateListeners = new Set<(state: LiveQueryState) => void>();
-	private resetListeners = new Set<
-		(rows: readonly RawLiveQueryRow<Row>[]) => void
-	>();
-	private batchListeners = new Set<
-		(
-			changes: readonly LiveQueryChange<Row>[],
-			batch: LiveQueryBatchInfo,
-		) => void
+	private updateListeners = new Set<
+		(update: RawLiveQueryUpdate<Row>) => void
 	>();
 	readonly renewals: SealedLiveQuery<Row>[] = [];
 	unsubscribed = false;
@@ -465,7 +539,7 @@ class TestSubscription<Row> implements MaterializedLiveQuerySubscription<Row> {
 
 	constructor(initialData?: readonly Row[]) {
 		this.snapshot = {
-			status: initialData === undefined ? "connecting" : "stale",
+			status: "connecting",
 			error: undefined,
 			data: initialData,
 		};
@@ -480,16 +554,9 @@ class TestSubscription<Row> implements MaterializedLiveQuerySubscription<Row> {
 
 	getSnapshot = (): LiveQuerySnapshot<Row> => this.snapshot;
 
-	onReset = (
-		listener: (rows: readonly RawLiveQueryRow<Row>[]) => void,
-	): (() => void) => add(this.resetListeners, listener);
-
-	onBatch = (
-		listener: (
-			changes: readonly LiveQueryChange<Row>[],
-			batch: LiveQueryBatchInfo,
-		) => void,
-	): (() => void) => add(this.batchListeners, listener);
+	onUpdate = (
+		listener: (update: RawLiveQueryUpdate<Row>) => void,
+	): (() => void) => add(this.updateListeners, listener);
 
 	onStateChange = (listener: (state: LiveQueryState) => void): (() => void) =>
 		add(this.stateListeners, listener);
@@ -512,7 +579,11 @@ class TestSubscription<Row> implements MaterializedLiveQuerySubscription<Row> {
 
 	renew = async (query: SealedLiveQuery<Row>): Promise<void> => {
 		this.renewals.push(query);
-		this.publish({ ...this.snapshot, status: "stale", error: undefined });
+		this.publish({
+			...this.snapshot,
+			status: "connecting",
+			error: undefined,
+		});
 	};
 
 	unsubscribe = (): void => {

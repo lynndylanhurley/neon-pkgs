@@ -1,5 +1,110 @@
 # neonctl
 
+## 8.8.0
+
+### Patch Changes
+
+- Updated dependencies [6ea34bc]
+  - neon@8.8.0
+
+## 8.7.2
+
+### Patch Changes
+
+- neon@8.7.2
+
+## 8.7.1
+
+### Patch Changes
+
+- Updated dependencies [9b6eadd]
+  - neon@8.7.1
+
+## 8.7.0
+
+### Patch Changes
+
+- Updated dependencies [abbd5a8]
+  - neon@8.7.0
+
+## 8.6.1
+
+### Patch Changes
+
+- Updated dependencies [b43cffd]
+  - neon@8.6.1
+
+## 8.6.0
+
+### Patch Changes
+
+- Updated dependencies [e88863a]
+- Updated dependencies [8a4387f]
+  - neon@8.6.0
+
+## 8.5.0
+
+### Patch Changes
+
+- Updated dependencies [7413f64]
+- Updated dependencies [d123ab5]
+- Updated dependencies [72576e7]
+  - neon@8.5.0
+
+## 8.4.5
+
+### Patch Changes
+
+- Updated dependencies [e952716]
+- Updated dependencies [f145dbc]
+  - neon@8.4.5
+
+## 8.4.4
+
+### Patch Changes
+
+- Updated dependencies [37e0381]
+  - neon@8.4.4
+
+## 8.4.3
+
+### Patch Changes
+
+- Updated dependencies [fb929cd]
+  - neon@8.4.3
+
+## 8.4.2
+
+### Patch Changes
+
+- Updated dependencies [edc3bed]
+  - neon@8.4.2
+
+## 8.4.1
+
+### Patch Changes
+
+- Updated dependencies [3c08c9b]
+- Updated dependencies [aeff82c]
+- Updated dependencies [65c1fca]
+  - neon@8.4.1
+
+## 8.4.0
+
+### Patch Changes
+
+- Updated dependencies [681014f]
+- Updated dependencies [33325b3]
+- Updated dependencies [5e276fd]
+  - neon@8.4.0
+
+## 8.3.6
+
+### Patch Changes
+
+- Updated dependencies [bb25e72]
+  - neon@8.3.6
+
 ## 8.3.5
 
 ### Patch Changes

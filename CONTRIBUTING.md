@@ -57,6 +57,8 @@ pnpm --filter @neon/env test:ci
 | `internals/` | `@neon-internals/*` — private, never published, bundled into the packages that use them. Currently the credential and env-resolution code shared by the `neon` CLI and `@neon/env`; each has its own README |
 | `tests/` | Test-only workspace packages, currently the live e2e harness |
 
+Examples meant for users belong in [`neondatabase/examples`](https://github.com/neondatabase/examples), not in this repository.
+
 See [`AGENTS.md`](./AGENTS.md) for the deeper architecture and per-package notes (especially the
 CLI package, which keeps its own toolchain).
 
@@ -71,6 +73,22 @@ package's file before changing it:
 ## CLI for agents
 
 `--help` lists every value an enum flag accepts. If `-y` cannot decide, the error names the flag (and values) to pass. Every command exposes flags for every interactive question so it can run with no TTY (`--agent`, `--project-id`, `--skill`, `--global`, `--oauth`, `--project`, `--template`, …). Coding-agent targeting is `--agent <name>` on `skills`, `plugins`, `mcp`, `init`, and `bootstrap`; detection on `-y`; or omit `-y` in a terminal to pick. `init` and `bootstrap` pass `--agent` to plugins, or to skills and mcp, not both. `link` has no `--agent`. Details: [`AGENTS.md`](./AGENTS.md) (CLI package) and [`packages/cli/AGENTS.md`](./packages/cli/AGENTS.md). Table output: [`packages/cli/CONTRIBUTING.md`](./packages/cli/CONTRIBUTING.md).
+
+## Staging-only features
+
+A CLI feature whose API is only on Neon's staging console ships **staging-only**: the CLI exposes it only when the host requests go to (`--api-host`, else `NEON_API_HOST`) has the staging hostname `console-stage.neon.build`. Everywhere else it is hidden from `--help` and fails with a "coming soon" error. No feature is gated today; Neon Realtime was until its API reached production. To try one, point the CLI at staging with a staging API key:
+
+```bash
+export NEON_API_HOST=https://console-stage.neon.build/api/v2
+export NEON_API_KEY=<staging key>
+neon <command> --help
+```
+
+- **An endpoint that answers HTTP 500 in production but works on staging is most likely staging-only for now** and needs the gate. Production answered the unreleased Realtime route with 500, not 404.
+- **Confirm with the feature's owner that it should be staging-only** before adding or removing a gate.
+- The helpers are in `packages/cli/src/utils/staging.ts`. When a staging-only feature ships to production, remove its call sites and any library opt-in it added (or make that opt-in default on), but keep the generic helpers (`isStagingApiHost()`, `stagingFeaturesEnabled()`, `stagingFeaturesEnabledForArgv()`, `StagingOnlyError`, `NEON_STAGING_API_HOST`) and the `stagingOnly` manifest field, so the next one reuses them.
+
+Details, including which helper fits which case: [`AGENTS.md`](./AGENTS.md#staging-only-features).
 
 ## Testing
 
@@ -194,14 +212,28 @@ account behind the key needs every id in `packages/ai-sdk-provider/e2e/helpers.t
 against a branch you already have instead, set `NEON_AI_GATEWAY_BASE_URL` and
 `NEON_AI_GATEWAY_TOKEN` (both, or neither) from `neon env pull`.
 
+### The Neon Auth suite
+
+`pnpm --filter @neon/auth test:e2e` is a separate live suite, **not** part of
+`test:e2e:live`, for the same budget reason as the gateway suite: it provisions a real
+project and signs real users up, which belongs on changes that can affect it rather than on
+every pull request.
+
+It takes the same `NEON_API_KEY` and provisions everything itself: a throwaway project,
+Neon Auth enabled on its default branch with email verification off — the only way a
+headless signup can succeed — and both removed when the run ends. The suite is small on
+purpose (see `packages/auth/e2e/`): a headless run covers the endpoint table the
+server-side proxy depends on and the password session and JWT handshake; everything that
+needs a browser or an outside party — OAuth, magic link, OTP delivery — is out of scope.
+
 ### In CI
 
 These run as the `e2e (live Neon)` workflow on every pull request from this repository, using a
-maintained throwaway org. The gateway suite runs as `e2e (live AI Gateway)`, path-filtered to
-changes under `packages/ai-sdk-provider/` and `tests/e2e-harness/` so its model spend tracks
-the code it covers. Both workflows map the repository secret `NEON_TEST_API_KEY` onto
-`NEON_API_KEY` and the repository variable `NEON_TEST_ORG_ID` onto `NEON_ORG_ID`, so the
-contract is identical to your local one.
+maintained throwaway org. The gateway suite runs as `e2e (live AI Gateway)` and the auth suite
+as `e2e (live Neon Auth)`, both path-filtered to their package and `tests/e2e-harness/` so
+their spend tracks the code they cover. All three workflows map the repository secret
+`NEON_TEST_API_KEY` onto `NEON_API_KEY` and the repository variable `NEON_TEST_ORG_ID` onto
+`NEON_ORG_ID`, so the contract is identical to your local one.
 
 Fork and Dependabot PRs skip the job, because GitHub does not expose repository secrets to
 untrusted pull request code. **You do not need credentials to contribute** — open the PR and a
@@ -227,3 +259,7 @@ pnpm changeset        # pick package(s) + bump + summary
 
 Commit the generated `.changeset/*.md` with your PR. See the "Release Management" section of
 [`AGENTS.md`](./AGENTS.md) for how releases are cut and published.
+
+A CLI release publishes two packages, always `neon` first and `neonctl` second. `neonctl` wraps
+`neon` and pins its exact version, so it cannot install until that `neon` is on npm. See
+"Publish order" in [`AGENTS.md`](./AGENTS.md).

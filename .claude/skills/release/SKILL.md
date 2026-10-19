@@ -171,8 +171,13 @@ gh workflow run neon-pkgs.yml --repo databricks/secure-public-registry-releases-
 is `workspace:*`), so ordering doesn't affect whether a run *succeeds* — but for npm consumers to
 resolve cleanly, publish a dependency before its dependents:
 `@neon/config` → `@neon/config-runtime` / `@neon/env` → `neon` → `neonctl`.
-Publishing `neon` also ships the standalone binaries and GitHub release; publish the compatibility
-package only after `npm view neon version` confirms the matching primary package.
+Publishing `neon` also ships the standalone binaries and GitHub release.
+
+**Always publish `neon` before `neonctl`.** `neonctl` wraps `neon`: `pnpm pack` turns its
+`workspace:*` dependency into an exact `neon@<version>` pin, so a `neonctl` published first cannot
+install until the matching `neon` is on npm. Dispatch `-f package=neon`, wait until
+`npm view neon@<version> version` prints the new version (npm can take a few minutes after the run
+goes green), then dispatch `-f package=neonctl`.
 
 **Homebrew needs nothing from you.** `brew install neonctl` is a homebrew-core formula that builds
 from the npm `neonctl` tarball, and Homebrew's bot bumps it within a day of each publish. The
@@ -180,8 +185,10 @@ compatibility package deliberately keeps both the `neonctl` and `neon` commands 
 working untouched — see [`docs/neonctl-compatibility-shim.md`](../../../docs/neonctl-compatibility-shim.md)
 before changing its `bin` map.
 
-After each run succeeds, confirm with `npm view <pkg> version` — if it still shows the old version,
-you ran a dry-run (missing/`dry-run` `package` input); re-dispatch with the real `-f package=<name>`.
+After each run succeeds, confirm with `npm view <pkg>@<version> version`. npm can take a few
+minutes to serve a new version, so keep checking. If it never appears, read the run's `package`
+input before re-dispatching: a missing or `dry-run` value published nothing, while a real package
+name means the publish went through and a second dispatch would fail on the existing version.
 This requires access to that repo — if you don't have it, hand the publish backlog list to someone
 who does.
 

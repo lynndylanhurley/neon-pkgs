@@ -14,6 +14,7 @@ export const ENV_PULL_KEYS = [
 	NEON_ENV_VAR_KEYS.branch.name,
 	...Object.values(NEON_ENV_VAR_KEYS.auth),
 	...Object.values(NEON_ENV_VAR_KEYS.dataApi),
+	...Object.values(NEON_ENV_VAR_KEYS.realtime),
 	...Object.values(NEON_ENV_VAR_KEYS.storage),
 	...Object.values(NEON_ENV_VAR_KEYS.aiGateway),
 ] as const;
@@ -26,6 +27,7 @@ const SERVICE_ENV_KEYS: Record<NeonService, readonly EnvPullKey[]> = {
 	postgres: Object.values(NEON_ENV_VAR_KEYS.postgres),
 	auth: Object.values(NEON_ENV_VAR_KEYS.auth),
 	"data-api": Object.values(NEON_ENV_VAR_KEYS.dataApi),
+	realtime: Object.values(NEON_ENV_VAR_KEYS.realtime),
 	"object-storage": Object.values(NEON_ENV_VAR_KEYS.storage),
 	"ai-gateway": Object.values(NEON_ENV_VAR_KEYS.aiGateway),
 	// Live slugs are not known until the branch is listed.
@@ -61,6 +63,8 @@ const ENV_KEY_SERVICE: Record<
 	NEON_AUTH_BASE_URL: "auth",
 	NEON_AUTH_JWKS_URL: "auth",
 	NEON_DATA_API_URL: "data-api",
+	NEON_REALTIME_URL: "realtime",
+	NEON_REALTIME_SECRET: "realtime",
 	AWS_ACCESS_KEY_ID: "object-storage",
 	AWS_SECRET_ACCESS_KEY: "object-storage",
 	AWS_ENDPOINT_URL_S3: "object-storage",

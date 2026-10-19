@@ -119,6 +119,17 @@ describe("defineConfig surfaces the guard at the call site (negative types)", ()
 });
 
 describe("defineConfig accepts every valid form (positive types)", () => {
+	test("Realtime booleans and settings", () => {
+		defineConfig({ preview: { realtime: true } });
+		defineConfig({ preview: { realtime: false } });
+		defineConfig({ preview: { realtime: {} } });
+		defineConfig({
+			preview: {
+				realtime: { allowedOrigins: ["https://app.example.com"] },
+			},
+		});
+	});
+
 	test("auth + bare dataApi", () => {
 		defineConfig({ auth: true, dataApi: true });
 	});
@@ -139,5 +150,19 @@ describe("defineConfig accepts every valid form (positive types)", () => {
 	test("a disabled dataApi without auth", () => {
 		defineConfig({ dataApi: false });
 		defineConfig({ dataApi: { enabled: false } });
+	});
+});
+
+describe("Realtime stays out of branch tuning (negative types)", () => {
+	test("rejects Realtime in branch tuning", () => {
+		defineConfig({
+			// @ts-expect-error Realtime is a static preview declaration.
+			branch: () => ({ realtime: true }),
+		});
+	});
+
+	test("rejects Realtime at the top level", () => {
+		// @ts-expect-error Realtime belongs under preview.
+		defineConfig({ realtime: true });
 	});
 });

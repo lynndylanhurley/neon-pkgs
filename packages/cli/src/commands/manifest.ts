@@ -12,10 +12,15 @@ export type CommandEntry = {
 	aliases?: string[];
 	describe: string;
 	load: () => Promise<CommandModule>;
+	/**
+	 * Staging-only: outside staging the command is hidden from help and fails with this
+	 * message. See `utils/staging.ts`.
+	 */
+	stagingOnly?: string;
 };
 
 /**
- * Every top-level command, in help order, with the metadata yargs needs to list and route it.
+ * Every top-level command, with the metadata yargs needs to list and route it.
  * A command's module (and everything it imports) loads only when yargs selects that command,
  * so `neon --help` and `neon projects list` don't pay for `init`, `dev`, or `psql`.
  *
@@ -205,6 +210,11 @@ export const commandManifest: CommandEntry[] = [
 		load: () => import("./data_api.js"),
 	},
 	{
+		command: "realtime",
+		describe: "Manage Neon Realtime for a branch",
+		load: () => import("./realtime.js"),
+	},
+	{
 		command: "functions",
 		aliases: ["function"],
 		describe: "Manage Neon Functions",
@@ -363,7 +373,14 @@ export const preloadCommand = async (
  * command still runs, because yargs 17 awaits a builder's promise when it runs a command; shell
  * completion does not await it, so a mispredicted completion lists no subcommands.
  */
-export const lazyCommands = commandManifest.map((entry) => ({
+export const lazyCommands = ({ staging }: { staging: boolean }) =>
+	commandManifest.map((entry) =>
+		entry.stagingOnly && !staging
+			? comingSoonCommand(entry, entry.stagingOnly)
+			: lazyCommand(entry),
+	);
+
+const lazyCommand = (entry: CommandEntry) => ({
 	command: entry.command,
 	aliases: entry.aliases,
 	describe: entry.describe,
@@ -380,4 +397,15 @@ export const lazyCommands = commandManifest.map((entry) => ({
 		const mod = loaded.get(entry) ?? (await entry.load());
 		return mod.handler?.(args);
 	},
-}));
+});
+
+const comingSoonCommand = (entry: CommandEntry, message: string) => ({
+	command: `${verbOf(entry)} [args..]`,
+	aliases: entry.aliases,
+	describe: false as const,
+	// Fail in the builder: the bare-parent help middleware runs before any handler.
+	builder: () => {
+		throw new Error(message);
+	},
+	handler: () => {},
+});

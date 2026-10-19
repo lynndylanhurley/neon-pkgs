@@ -2,12 +2,14 @@ import {
 	ConnectionCoordinator,
 	ConnectionCoordinatorError,
 	type ConnectionHandle,
+	type WebSocketFactory,
 } from "./connection/coordinator.js";
 import {
 	type ClientEventSink,
 	createClientEventSink,
 	registerSubscriptionEvents,
 } from "./diagnostics.js";
+import type { NoInferCompat } from "./no-infer.js";
 import {
 	createParserRegistry,
 	type PostgreSQLParserRegistry,
@@ -52,18 +54,22 @@ class RealtimeClientImpl implements RealtimeClient {
 	private readonly parsers: PostgreSQLParserRegistry;
 	private readonly events: ClientEventSink;
 
-	constructor(options: RealtimeClientOptions) {
+	constructor(
+		options: RealtimeClientOptions,
+		webSocketFactory?: WebSocketFactory,
+	) {
 		this.events = createClientEventSink(options);
 		this.coordinator = new ConnectionCoordinator({
 			url: options.url,
 			events: this.events,
+			webSocketFactory,
 		});
 		this.parsers = createParserRegistry(options.parsers);
 	}
 
 	subscribe<Row>(
 		query: SealedLiveQuery<Row>,
-		options?: MaterializedLiveQueryOptions<Row>,
+		options?: MaterializedLiveQueryOptions<NoInferCompat<Row>>,
 	): MaterializedLiveQuerySubscription<Row>;
 	subscribe<Row>(
 		query: SealedLiveQuery<Row>,
@@ -71,7 +77,9 @@ class RealtimeClientImpl implements RealtimeClient {
 	): RawLiveQuerySubscription<Row>;
 	subscribe<Row>(
 		query: SealedLiveQuery<Row>,
-		options?: MaterializedLiveQueryOptions<Row> | RawLiveQueryOptions,
+		options?:
+			| MaterializedLiveQueryOptions<NoInferCompat<Row>>
+			| RawLiveQueryOptions,
 	): MaterializedLiveQuerySubscription<Row> | RawLiveQuerySubscription<Row> {
 		if (this.disposed) throw new Error("Realtime client is closed");
 		validateSealedQuery(query);
@@ -94,7 +102,8 @@ class RealtimeClientImpl implements RealtimeClient {
 			events,
 			reconciliation: subscription,
 			admitted: (columns) => subscription.admit(columns),
-			disconnected: () => subscription.disconnected(),
+			connecting: () => subscription.connecting(),
+			queryUnavailable: () => subscription.queryUnavailable(),
 			failed: (error) => subscription.fail(error),
 		});
 		this.handles.set(subscription as Subscription<unknown>, handle);
@@ -173,4 +182,12 @@ export function createRealtimeClient(
 	options: RealtimeClientOptions,
 ): RealtimeClient {
 	return new RealtimeClientImpl(options);
+}
+
+/** @internal Node direct subscriptions supply a terminable WebSocket. */
+export function createRealtimeClientInternal(
+	options: RealtimeClientOptions,
+	webSocketFactory: WebSocketFactory,
+): RealtimeClient {
+	return new RealtimeClientImpl(options, webSocketFactory);
 }

@@ -1,5 +1,38 @@
 # @neondatabase/config
 
+## 1.9.2
+
+### Patch Changes
+
+- 8ac70da: Raise the `zod` dependency range to `^4.5.4`.
+- Updated dependencies [0cee585]
+  - @neon/sdk@7.3.0
+
+## 1.9.1
+
+### Patch Changes
+
+- Updated dependencies [5f572b6]
+  - @neon/sdk@7.2.0
+
+## 1.9.0
+
+### Minor Changes
+
+- 33325b3: Add Realtime as a branch-level preview feature in `neon.ts`. `neon init --services realtime` and `neon config add realtime [--allowed-origin <origin>]` declare it for plan and deploy, while `neon realtime enable` and `neon realtime disable` manage the selected branch directly.
+- 5e276fd: Expose the Realtime WebSocket URL and server-only secret through `@neon/env` and `neon env pull`. Config-aware pulls wait for asynchronous Realtime provisioning before returning `NEON_REALTIME_URL` and `NEON_REALTIME_SECRET`; applications derive the database name from `DATABASE_URL`.
+
+### Patch Changes
+
+- Updated dependencies [025988c]
+  - @neon/sdk@7.1.0
+
+## 1.8.7
+
+### Patch Changes
+
+- bb25e72: When Neon Auth can't be provisioned on a branch (for example because the database already has a `neon_auth` schema), `neon neon-auth enable` now shows the API's reason instead of "Neon Auth is not enabled for this branch", and in that case `neon deploy` / `neon config apply` no longer append a hint about name collisions.
+
 ## 1.8.6
 
 ### Patch Changes

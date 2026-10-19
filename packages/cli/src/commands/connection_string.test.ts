@@ -1,7 +1,35 @@
 import { describe, expect } from "vitest";
-import { test } from "../test_utils/fixtures";
+import {
+	forwardedPsqlArgs,
+	NUMERIC_PSQL_ARGS,
+	test,
+} from "../test_utils/fixtures";
 
 describe("connection_string", () => {
+	test("reports a 200 response whose body is not valid JSON", async ({
+		testCliCommand,
+	}) => {
+		const { stdout } = await testCliCommand(
+			[
+				"connection-string",
+				"br-sunny-branch-123456",
+				"--project-id",
+				"test",
+				"--role-name",
+				"neondb_owner",
+			],
+			{
+				mockDir: "unparseable-databases",
+				snapshot: false,
+				code: 1,
+				stderr: expect.stringMatching(
+					/ERROR: Could not read the Neon API response \(200 OK\) to \/projects\/test\/branches\/br-sunny-branch-123456\/databases: the body is not valid JSON/,
+				),
+			},
+		);
+		expect(stdout).toBe("");
+	});
+
 	test("picks neondb_owner over the Data API roles", async ({
 		testCliCommand,
 	}) => {
@@ -198,6 +226,28 @@ describe("connection_string", () => {
 			"-c",
 			"SELECT 1",
 		]);
+	});
+
+	test("connection_string with psql forwards numeric-looking args as typed", async ({
+		testCliCommand,
+	}) => {
+		const { stdout } = await testCliCommand(
+			[
+				"connection-string",
+				"test_branch",
+				"--project-id",
+				"test",
+				"--database-name",
+				"test_db",
+				"--role-name",
+				"test_role",
+				"--psql",
+				"--",
+				...NUMERIC_PSQL_ARGS,
+			],
+			{ snapshot: false },
+		);
+		expect(forwardedPsqlArgs(stdout)).toEqual(NUMERIC_PSQL_ARGS);
 	});
 
 	test("connection_string without ssl", async ({ testCliCommand }) => {

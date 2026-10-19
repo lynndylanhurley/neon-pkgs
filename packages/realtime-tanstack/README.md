@@ -46,11 +46,15 @@ stable unique string or number for every row. Standard collection options such
 as `id`, `schema`, garbage collection, collation, and mutation handlers are
 forwarded to TanStack DB.
 
-The integration synchronizes eagerly. It applies each authoritative reset or
-live-query publication batch as one TanStack sync transaction. Realtime
-`connecting` maps to a loading collection and `live` maps to ready. A stale
-subscription keeps its usable collection ready during recovery; terminal errors
-put the collection into its error state.
+The sealed query preserves its live row type, including values such as `Date`,
+through JSON-aware RPC typing.
+
+The integration synchronizes eagerly. It applies each complete-row replacement
+or incremental change batch as one TanStack sync transaction. Realtime
+`connecting` maps to a loading collection until the first complete result and
+`live` maps to ready. Once ready, a collection retains its usable rows while a
+subscription is `connecting` or `stale`; terminal errors put the collection into
+its error state.
 
 ## Optimistic mutations
 
@@ -92,6 +96,9 @@ For SSR, use TanStack DB's normal `DbClient`, dehydration, and
 request-scoped collection with the initial rows; the browser hydrates it and
 starts ordinary Realtime synchronization. Do not pass `initialData` to
 `realtimeCollectionOptions()` because TanStack DB owns collection hydration.
+Ensure the application's serializer or decoder restores values such as `Date`
+before hydrating. The live row type describes decoded values, not their JSON
+representation; the adapter does not deserialize HTTP or SSR payloads.
 
 ## API
 
@@ -99,3 +106,6 @@ starts ordinary Realtime synchronization. Do not pass `initialData` to
 options with a Realtime-owned `sync` implementation and an additional
 `utils.awaitTxId()` method. The package also exports the corresponding config,
 options, and utilities types for reusable collection factories.
+
+The sealed query determines the row type. Refresh callbacks and collection
+options are checked against it rather than weakening it.

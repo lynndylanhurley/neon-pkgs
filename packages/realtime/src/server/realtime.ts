@@ -8,11 +8,7 @@ import type {
 	RealtimeLogger,
 	RealtimeLogLevel,
 } from "../client/types.js";
-import {
-	type PreparedLiveQuery,
-	type RealtimeAdapter,
-	validatePreparedQuery,
-} from "./adapter.js";
+import type { PreparedLiveQuery, RealtimeAdapter } from "./adapter.js";
 import {
 	createCapabilityIssuer,
 	parseRealtimeSecret,
@@ -68,13 +64,13 @@ export interface RealtimeServer<Query> {
 	 * Encrypt a concrete query as a short-lived sealed query.
 	 *
 	 * Raw queries produced by {@link rawSql} are always accepted. Other query
-	 * objects are prepared by the configured adapter.
+	 * objects are prepared by the configured adapter. SQL validation is deferred
+	 * to the Realtime proxy when the capability is used.
 	 *
 	 * @param input - Concrete query to seal.
 	 * @returns A JSON-compatible bearer capability with its public fingerprint
 	 * and expiry.
-	 * @throws If the query is invalid, no adapter can prepare it, or capability
-	 * encryption fails.
+	 * @throws If no adapter can prepare the query or capability encryption fails.
 	 */
 	seal<ConcreteQuery extends SealableQuery<Query>>(
 		input: SealInput<ConcreteQuery>,
@@ -86,8 +82,8 @@ export interface RealtimeServer<Query> {
  *
  * Each subscription prepares and encrypts its query locally, then uses a
  * shared low-level client and refreshes its capability automatically. It
- * remains stale through retryable outages and transparently replaces an
- * expired subscription after connectivity returns.
+ * retains its rows while connecting through retryable outages and
+ * transparently replaces an expired subscription after connectivity returns.
  *
  * @typeParam Query - Query object accepted by the configured adapter.
  */
@@ -106,7 +102,7 @@ export interface RealtimeDirectServer<Query> extends RealtimeServer<Query> {
 		options?: MaterializedLiveQueryOptions<QueryRow<ConcreteQuery>>,
 	): Promise<MaterializedLiveQuerySubscription<QueryRow<ConcreteQuery>>>;
 	/**
-	 * Subscribe to raw resets and atomic change batches without retaining rows.
+	 * Subscribe to complete rows and atomic change batches without retaining rows.
 	 *
 	 * @param query - Concrete raw SQL or adapter-native query.
 	 * @param options - Set `materialize` to `false` to consume raw events.
@@ -202,7 +198,6 @@ export function createRealtime<Query = RawSqlQuery<unknown>>(
 		const prepared = isRawSqlQuery(query)
 			? prepareRawSqlQuery(query)
 			: prepareWithConfiguredAdapter(query as Query, adapter);
-		validatePreparedQuery(prepared);
 		return snapshotPreparedQuery(prepared);
 	};
 	const sealPrepared = async <Row>(

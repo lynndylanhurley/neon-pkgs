@@ -89,6 +89,9 @@ neon claim create
 
 # Request Managed Better Auth and the Data API too
 neon claim create --service auth --service data-api
+
+# Create the project in another region (default: aws-us-east-2)
+neon claim create --region-id aws-eu-central-1
 ```
 
 When the current directory has a `neon.ts`, `claim create` also requests every service
@@ -305,6 +308,35 @@ regression + TAP tests.
 ### Known limitations
 
 - **TLS cipher is runtime-dependent.** The negotiated TLS 1.3 ciphersuite is chosen by the host runtime's TLS library from an offer byte-identical to libpq's. Under Node (OpenSSL) that is `TLS_AES_256_GCM_SHA384`, matching vanilla psql; under Bun (BoringSSL) it is `TLS_AES_128_GCM_SHA256`. Both are TLS 1.3 AEAD suites with no practical security difference, and neither runtime exposes a client-side knob to steer the selection.
+
+## Subscribe to a Realtime query
+
+`neon realtime subscribe` streams a live SQL query until interrupted:
+
+```bash
+neon realtime subscribe "SELECT id, title, completed FROM realtime_todos ORDER BY id"
+```
+
+The default terminal output is append-only. It identifies the selected project,
+branch, and database; prints the initial result once; reports connection-state
+changes; and then prints each published change set with its transaction IDs, a compact
+`+insert ~update -delete` summary, and the affected rows. It does not take over the
+terminal or require keyboard navigation. Pass `--changes` to display the raw `rows`
+and `changes` events instead of the materialized view.
+
+For scripts and agents, JSON output is a JSON Lines stream with one complete event
+per line. YAML output uses one document per event:
+
+```bash
+neon realtime subscribe --changes --output json "SELECT * FROM realtime_todos" |
+  jq --unbuffered 'select(.type == "changes")'
+
+neon realtime subscribe --output yaml "SELECT * FROM realtime_todos"
+```
+
+Machine-readable output retains the event stream: without `--changes`, each event is
+a complete `snapshot`; with `--changes`, events are raw `rows` and `changes` objects.
+Lifecycle labels and the target header are terminal-only.
 
 ## Configure autocompletion
 
@@ -594,7 +626,16 @@ Console), or drop auth from --service.
 
 If you'd rather not keep env vars on disk, inject them at runtime instead with `neon-env run -- <your dev command>` (from `@neon/env`) or `neon dev`, and pass `--no-env-pull` to `link` / `checkout`.
 
-**`neon dev` resolves the same set, by the same rules** — including the AI Gateway on a branch with no `neon.ts`. A function running locally gets the same Postgres / Auth / Data API / storage / AI Gateway vars a deploy would inject. Each `NEON_FUNCTION_<SLUG>_BASE_URL` this process is serving is rewritten to `http://localhost:<port>`: every neon.ts function, or the matching slug when `--source` names one. `neon env pull` and `neon-env run` write the production URL (`https://<branchId>-<slug>.compute.…`). `dev` writes nothing, but it does *read* your `.env` / `.env.local` to reuse the branch credential behind the AI Gateway and object storage. Without a file to read from it issues one on every start and leaves the last one live — it has nowhere to keep it, and so cannot name it to revoke it. It says so when it happens; run `env pull` (or just `link` / `checkout`) once and restarts reuse the credential instead.
+**`neon dev` resolves the same set, by the same rules** — including the AI Gateway on a branch with no `neon.ts`. A function running locally gets the same Postgres / Auth / Data API / storage / AI Gateway vars a deploy would inject. Each `NEON_FUNCTION_<SLUG>_BASE_URL` this process is serving is rewritten to `http://localhost:<port>`: every neon.ts function, or the matching slug when `--source` names one. `neon env pull` and `neon-env run` write the production URL (`https://<branchId>-<slug>.compute.…`).
+
+Before `neon.ts` is evaluated, `dev` loads the project directory's `.env`, then `.env.local`, which overrides it, into the environment, so Function env values written as `process.env.X!` resolve the same way they do for `neon deploy --env`. A variable already set in the shell wins over both. Local Functions inherit every loaded variable, including keys `neon.ts` doesn't declare; the deployed runtime gets only declared and Neon-injected env. `--env <file>` loads only that file, resolved from the current directory, matching `neon deploy --env`:
+
+```bash
+neon dev                       # loads .env, then .env.local (overrides .env)
+neon dev --env .env.staging    # loads only .env.staging
+```
+
+`dev` writes nothing. To reuse the branch credential behind the AI Gateway and object storage, it reads only the file `env pull` writes (`.env` when it exists, otherwise `.env.local`), so an override in the other file cannot pair one credential's key ID with another's secret. Without a file to read from it issues one on every start and leaves the last one live — it has nowhere to keep it, and so cannot name it to revoke it. It says so when it happens; run `env pull` (or just `link` / `checkout`) once and restarts reuse the credential instead.
 
 **Where `.neon` lives**: `link` writes `.neon` into the **current working directory** by default. If an existing `.neon` is found in any parent directory, that file is reused — so commands run from a sub-directory of a linked project still pick up the project's context. To pin the location explicitly, pass `--context-file <path>`. `neon init` always writes `.neon` into the current directory.
 
@@ -857,11 +898,11 @@ $ neon init -y --agent cursor --project-id <project-id> \
     --mcp-auth oauth --mcp-config-location project --mcp-project-scoped
 ```
 
-Without a TTY, pass `-y` or enough flags to answer every question. `-y` alone is Recommended. `-y` with `--skill`, MCP flags, `--no-agent-setup`, or `--claimable` is Custom: those flags, Recommended defaults for the rest. `--skill` selects skills (not the plugin). MCP flags select skills and MCP. `--agent` skips agent selection and, without `-y`, selects Custom. `--no-link` skips project linking without asking. `--no-config` skips `neon.ts`. `--services` implies creating `neon.ts`. `--org-id`, `--project-id`, `--project-name`, `--region-id`, and `--branch` select linking.
+Without a TTY, pass `-y` or enough flags to answer every question. `-y` alone is Recommended. `-y` with `--skill`, MCP flags, `--no-agent-setup`, or `--claimable` is Custom: those flags, Recommended defaults for the rest. `--skill` selects skills (not the plugin). MCP flags select skills and MCP. `--agent` skips agent selection and, without `-y`, selects Custom. `--no-link` skips project linking without asking. `--no-config` skips `neon.ts`. `--services` implies creating `neon.ts`. `--org-id`, `--project-id`, `--project-name`, `--region-id`, and `--branch` select linking. With `--claimable`, `--region-id` picks the claimable project's region.
 
 `--project-id`, `--org-id`, `--project-name`, `--region-id`, and `--branch` are forwarded to `link`. They select linking. A linked directory is not relinked unless you pass one of those flags.
 
-After a new default `neon.ts` on a pinned branch, init runs `env pull` unless link already pulled env or the file declares extra services (those still need `neon config plan` / `neon deploy`).
+Init pulls the branch's env vars once, after the `neon.ts` step, so the pull includes what `neon.ts` declares. The AI Gateway and Functions need no deploy and are pulled immediately. When `neon.ts` declares Auth, the Data API, Object Storage, or Realtime, init pulls Postgres, plus the AI Gateway and the scaffolded function's URL when declared. `neon deploy` provisions the rest and pulls their env vars. An existing `neon.ts` is pulled by `link` as usual.
 
 A failed step stops the rest. `--profile` and `--config-dir` are forwarded to each child. `--output json` and `--output yaml` are refused; the commands init runs print their own output.
 
@@ -938,7 +979,7 @@ On a TTY the command asks which agents and which skills, then installs. Detected
 
 `-y` skips those questions and installs the default skills into detected agents: project-folder markers such as `.cursor`, else the agent driving the CLI. `--agent` / `-a` names coding agents and skips the agent picker. `--skill` / `-s` names specific skills and skips the skill picker; it does not select agents. `--global -y` uses installed apps, else the host CLI agent. Without a TTY, pass `-y`, or `--skill <name>` (add `--agent <name>` to name agents). If `-y` finds no agent, it exits: pass `--agent <name>`, run from a supported agent, or omit `-y` in a terminal to pick.
 
-`--skill` names by source repo: `neondatabase/agent-skills` (`neon`, `neon-ai-gateway`, `neon-auth`, `neon-functions`, `neon-object-storage`, `neon-postgres`, `neon-postgres-branches`, `neon-postgres-egress-optimizer`); `neondatabase/neon-for-agent-platforms` (`neon-postgres-agent-platforms`).
+`--skill` names by source repo: `neondatabase/agent-skills` (`neon`, `neon-ai-gateway`, `neon-auth`, `neon-functions`, `neon-object-storage`, `neon-postgres`, `neon-postgres-branches`, `neon-postgres-egress-optimizer`, `neon-realtime`); `neondatabase/neon-for-agent-platforms` (`neon-postgres-agent-platforms`).
 
 Supported agents match `neon mcp`, minus agents that cannot install skills: `antigravity`, `cline`, `cline-cli`, `claude-code`, `claude-desktop`, `codex`, `cursor`, `gemini-cli`, `goose`, `github-copilot-cli`, `grok-build`, `opencode`, `vscode`, `windsurf`, `zed`. `mcporter` is a known MCP name that is then skipped. `neon skills --help` lists the same skill and agent values, and that `-y` leaves out `neon-postgres-agent-platforms`.
 
@@ -990,7 +1031,7 @@ Default scope is `project`. `--global` is `user`. On macOS and Linux, Cursor and
 
 Supported agents with a plugins mapping: `claude-code`, `claude-desktop`, `codex`, `cursor`, `github-copilot-cli`, `grok-build`, `vscode`. `claude-desktop` installs as Claude Code; detecting both produces one install and lists both names in the table. `mcporter` is a known MCP name that is then skipped.
 
-The plugins CLI installs every plugin it finds in the Neon plugin package. Today that is `neon-postgres` from `neondatabase/agent-skills`. It includes the Neon MCP server (`https://mcp.neon.tech/mcp`) and these skills: `neon`, `neon-ai-gateway`, `neon-auth`, `neon-functions`, `neon-object-storage`, `neon-postgres`, `neon-postgres-branches`, `neon-postgres-egress-optimizer`. It does not include `neon-postgres-agent-platforms`.
+The plugins CLI installs every plugin it finds in the Neon plugin package. Today that is `neon-postgres` from `neondatabase/agent-skills`. It includes the Neon MCP server (`https://mcp.neon.tech/mcp`) and these skills: `neon`, `neon-ai-gateway`, `neon-auth`, `neon-functions`, `neon-object-storage`, `neon-postgres`, `neon-postgres-branches`, `neon-postgres-egress-optimizer`, `neon-realtime`. It does not include `neon-postgres-agent-platforms`.
 
 `neon plugins --help` lists the plugin, those contents, and the supported agent names.
 

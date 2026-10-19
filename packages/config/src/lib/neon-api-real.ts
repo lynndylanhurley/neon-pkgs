@@ -1,5 +1,8 @@
 import type {
 	DataApiSettings as ApiDataApiSettings,
+	Realtime as ApiRealtime,
+	RealtimeOptions as ApiRealtimeOptions,
+	RealtimeSecret as ApiRealtimeSecret,
 	Branch,
 	BranchCreateRequest,
 	BranchCreateRequestEndpointOptions,
@@ -23,10 +26,14 @@ import {
 	createProjectBranch as rawCreateProjectBranch,
 	createProjectBranchDataApi as rawCreateProjectBranchDataApi,
 	deleteProjectBranchDataApi as rawDeleteProjectBranchDataApi,
+	disableProjectBranchRealtime as rawDisableProjectBranchRealtime,
+	enableProjectBranchRealtime as rawEnableProjectBranchRealtime,
 	getConnectionUri as rawGetConnectionUri,
 	getNeonAuth as rawGetNeonAuth,
 	getProject as rawGetProject,
 	getProjectBranchDataApi as rawGetProjectBranchDataApi,
+	getProjectBranchRealtime as rawGetProjectBranchRealtime,
+	getProjectBranchRealtimeSecret as rawGetProjectBranchRealtimeSecret,
 	listProjectBranchDatabases as rawListProjectBranchDatabases,
 	listProjectBranches as rawListProjectBranches,
 	listProjectBranchRoles as rawListProjectBranchRoles,
@@ -41,6 +48,7 @@ import { z } from "zod";
 import { formatSuspendTimeout, parseSuspendTimeout } from "./duration.js";
 import { ErrorCode, PlatformError } from "./errors.js";
 import type {
+	ConfigureRealtimeInput,
 	CreateBranchInput,
 	CreateBucketInput,
 	CreateCredentialInput,
@@ -64,6 +72,8 @@ import type {
 	NeonFunctionDeploymentSnapshot,
 	NeonFunctionSnapshot,
 	NeonProjectSnapshot,
+	NeonRealtimeSecret,
+	NeonRealtimeSnapshot,
 	NeonRoleSnapshot,
 	NeonTriggerSnapshot,
 	UpdateBranchInput,
@@ -204,6 +214,32 @@ function dataApiSnapshotFromResponse(
 	const settings = dataApiSettingsFromApi(data.settings);
 	if (settings) snapshot.settings = settings;
 	return snapshot;
+}
+
+function realtimeOptionsToApi(
+	input: ConfigureRealtimeInput | undefined,
+): ApiRealtimeOptions {
+	return input?.allowedOrigins === undefined
+		? {}
+		: { allowed_origins: [...input.allowedOrigins] };
+}
+
+function realtimeSnapshotFromApi(data: ApiRealtime): NeonRealtimeSnapshot {
+	return {
+		enabled: data.enabled,
+		pending: data.pending,
+		...(data.invocation_url !== undefined
+			? { invocationUrl: data.invocation_url }
+			: {}),
+		...(data.revision !== undefined ? { revision: data.revision } : {}),
+		...(data.allowed_origins !== undefined
+			? { allowedOrigins: [...data.allowed_origins] }
+			: {}),
+	};
+}
+
+function realtimeSecretFromApi(data: ApiRealtimeSecret): NeonRealtimeSecret {
+	return { secret: data.secret, pending: data.pending };
 }
 
 // ─── Preview: buckets ──────────────────────────────────────────────────────
@@ -855,6 +891,7 @@ class RealNeonApi implements NeonApi {
 		// Idempotent: if an integration already exists on the branch, the POST returns 409
 		// (`Conflict`). We swallow that and re-fetch the existing snapshot so callers can
 		// rely on `enableNeonAuth` to be safe to invoke from any push, including no-ops.
+		// A 409 with no integration to re-fetch is a failed provisioning and is thrown.
 		try {
 			return await this.call(
 				`enableNeonAuth(${projectId}/${branchId})`,
@@ -877,6 +914,7 @@ class RealNeonApi implements NeonApi {
 			) {
 				const existing = await this.getNeonAuth(projectId, branchId);
 				if (existing) return existing;
+				throw neonAuthProvisioningConflict(err, projectId, branchId);
 			}
 			throw err;
 		}
@@ -1089,6 +1127,96 @@ class RealNeonApi implements NeonApi {
 				return;
 			throw err;
 		}
+	}
+
+	// ─── Realtime ──────────────────────────────────────────────────────────────
+
+	async getProjectBranchRealtime(
+		projectId: string,
+		branchId: string,
+	): Promise<NeonRealtimeSnapshot> {
+		return this.call(
+			`getProjectBranchRealtime(${projectId}/${branchId})`,
+			async () =>
+				realtimeSnapshotFromApi(
+					unwrap(
+						await rawGetProjectBranchRealtime({
+							client: this.client,
+							path: {
+								project_id: projectId,
+								branch_id: branchId,
+							},
+						}),
+					),
+				),
+			{ projectId },
+		);
+	}
+
+	async getProjectBranchRealtimeSecret(
+		projectId: string,
+		branchId: string,
+	): Promise<NeonRealtimeSecret> {
+		return this.call(
+			`getProjectBranchRealtimeSecret(${projectId}/${branchId})`,
+			async () =>
+				realtimeSecretFromApi(
+					unwrap(
+						await rawGetProjectBranchRealtimeSecret({
+							client: this.client,
+							path: {
+								project_id: projectId,
+								branch_id: branchId,
+							},
+						}),
+					),
+				),
+			{ projectId },
+		);
+	}
+
+	async enableProjectBranchRealtime(
+		projectId: string,
+		branchId: string,
+		input?: ConfigureRealtimeInput,
+	): Promise<void> {
+		await this.call(
+			`enableProjectBranchRealtime(${projectId}/${branchId})`,
+			async () => {
+				unwrap(
+					await rawEnableProjectBranchRealtime({
+						client: this.client,
+						path: {
+							project_id: projectId,
+							branch_id: branchId,
+						},
+						body: realtimeOptionsToApi(input),
+					}),
+				);
+			},
+			{ projectId, mutating: true },
+		);
+	}
+
+	async disableProjectBranchRealtime(
+		projectId: string,
+		branchId: string,
+	): Promise<void> {
+		await this.call(
+			`disableProjectBranchRealtime(${projectId}/${branchId})`,
+			async () => {
+				unwrap(
+					await rawDisableProjectBranchRealtime({
+						client: this.client,
+						path: {
+							project_id: projectId,
+							branch_id: branchId,
+						},
+					}),
+				);
+			},
+			{ projectId, mutating: true },
+		);
 	}
 
 	// ─── Preview: buckets ──────────────────────────────────────────────────────
@@ -2002,6 +2130,30 @@ function neonAuthResponseToSnapshot(
 	}
 	if (data.base_url) snapshot.baseUrl = data.base_url;
 	return snapshot;
+}
+
+/**
+ * A 409 from enabling Neon Auth on a branch that still has no integration. The cause is
+ * whatever the API says (for example an existing `neon_auth` schema), so its message replaces
+ * the generic name-collision hint that `wrapNeonError` adds to every 409.
+ */
+function neonAuthProvisioningConflict(
+	err: PlatformError,
+	projectId: string,
+	branchId: string,
+): PlatformError {
+	const { neonMessage, requestId } = err.details;
+	const requestIdSuffix =
+		typeof requestId === "string" ? ` (request id ${requestId})` : "";
+	const reason =
+		typeof neonMessage === "string"
+			? `Neon API said: "${neonMessage}"${requestIdSuffix}.`
+			: `Neon Auth is not enabled on this branch and could not be provisioned (HTTP 409)${requestIdSuffix}.`;
+	return new PlatformError(
+		ErrorCode.Conflict,
+		`enableNeonAuth(${projectId}/${branchId}) failed: ${reason}`,
+		{ cause: err, details: err.details },
+	);
 }
 
 export function createNeonAuthRestInput(input: {

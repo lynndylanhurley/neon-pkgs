@@ -1,5 +1,45 @@
 # @neondatabase/config-runtime
 
+## 1.10.1
+
+### Patch Changes
+
+- Updated dependencies [8ac70da]
+  - @neon/config@1.9.2
+
+## 1.10.0
+
+### Minor Changes
+
+- d123ab5: Neon Realtime works against the production API. `neon realtime` (including `neon realtime subscribe`), `neon config add realtime`, `--services realtime`, and `preview.realtime` in `neon.ts` no longer require `NEON_API_HOST` to point at staging, and `neon env pull`, `neon config status`, and `neon dev` read the branch's Realtime state again. `pullConfig` and `inspect` read Realtime by default; pass `realtime: false` to skip it.
+
+## 1.9.1
+
+### Patch Changes
+
+- aeff82c: Neon Realtime is staging-only for now. Outside `NEON_API_HOST` / `--api-host` pointing at `https://console-stage.neon.build/api/v2`, `neon realtime`, `neon subscribe`, `neon config add realtime`, `--services realtime`, and a `neon.ts` that declares `preview.realtime` fail with "Neon Realtime is coming soon!", and `neon env pull`, `neon config status`, and the env pull in `neon init` / `link` / `checkout` no longer read Realtime. `pullConfig` and `inspect` read Realtime only with `realtime: true`.
+  - @neon/config@1.9.1
+
+## 1.9.0
+
+### Minor Changes
+
+- 33325b3: Add Realtime as a branch-level preview feature in `neon.ts`. `neon init --services realtime` and `neon config add realtime [--allowed-origin <origin>]` declare it for plan and deploy, while `neon realtime enable` and `neon realtime disable` manage the selected branch directly.
+- 5e276fd: Expose the Realtime WebSocket URL and server-only secret through `@neon/env` and `neon env pull`. Config-aware pulls wait for asynchronous Realtime provisioning before returning `NEON_REALTIME_URL` and `NEON_REALTIME_SECRET`; applications derive the database name from `DATABASE_URL`.
+
+### Patch Changes
+
+- Updated dependencies [33325b3]
+- Updated dependencies [5e276fd]
+  - @neon/config@1.9.0
+
+## 1.8.1
+
+### Patch Changes
+
+- Updated dependencies [bb25e72]
+  - @neon/config@1.8.7
+
 ## 1.8.0
 
 ### Minor Changes

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	NEON_AUTH_LEGACY_SESSION_CHALLENGE_COOKIE_NAME,
 	NEON_AUTH_SESSION_CHALLENGE_COOKIE_NAME,
@@ -375,5 +375,60 @@ describe("exchangeOAuthToken", () => {
 		expect(result?.redirectUrl.searchParams.has(VERIFIER_PARAM)).toBe(
 			false,
 		);
+	});
+});
+
+describe("exchangeOAuthToken client-info header", () => {
+	const originalNextRuntime = process.env.NEXT_RUNTIME;
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.resetModules();
+		if (originalNextRuntime === undefined) delete process.env.NEXT_RUNTIME;
+		else process.env.NEXT_RUNTIME = originalNextRuntime;
+	});
+
+	// The injector caches client info at module init, so the env must be set
+	// before the module graph is (re)loaded.
+	async function captureUpstream(headers: Record<string, string>) {
+		process.env.NEXT_RUNTIME = "nodejs";
+		vi.resetModules();
+		const { exchangeOAuthToken: run } = await import("./oauth");
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(Response.json({}, { status: 401 }));
+
+		await run(
+			new Request(`https://example.com/dashboard?${VERIFIER_PARAM}=v`, {
+				headers: {
+					Cookie: `${NEON_AUTH_SESSION_CHALLENGE_COOKIE_NAME}=c`,
+					...headers,
+				},
+			}),
+			"https://auth.example.com",
+			TEST_SECRET,
+		);
+
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		return new Headers(fetchSpy.mock.calls[0]?.[1]?.headers);
+	}
+
+	test("stamps X-Neon-Client-Info on the verifier exchange", async () => {
+		const upstreamHeaders = await captureUpstream({});
+
+		const info = JSON.parse(
+			upstreamHeaders.get("X-Neon-Client-Info") ?? "null",
+		);
+		expect(info.sdk).toBe("@neon/auth");
+		expect(info.framework).toBe("next");
+	});
+
+	test("preserves an inbound X-Neon-Client-Info value", async () => {
+		const inbound = JSON.stringify({ sdk: "custom", version: "9.9.9" });
+		const upstreamHeaders = await captureUpstream({
+			"X-Neon-Client-Info": inbound,
+		});
+
+		expect(upstreamHeaders.get("X-Neon-Client-Info")).toBe(inbound);
 	});
 });

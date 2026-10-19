@@ -58,8 +58,10 @@ export function Messages(props: MessagesProps) {
     refreshQuery: () => sealMessages(props.channelId),
   });
 
-  useEffect(() => utils.onBatch((_changes, batch) => {
-    console.debug("Applied transactions", batch.txids);
+  useEffect(() => utils.onUpdate((update) => {
+    if (update.type === "changes") {
+      console.debug("Applied transactions", update.batch.txids);
+    }
   }), [utils]);
 
   if (error) return <p>{error.message}</p>;
@@ -67,7 +69,7 @@ export function Messages(props: MessagesProps) {
 
   return (
     <>
-      {status === "stale" && <p>Updating…</p>}
+      {status !== "live" && <p>Updating…</p>}
       <ul>
         {data.map((message) => <li key={message.id}>{message.body}</li>)}
       </ul>
@@ -82,14 +84,51 @@ lower-level event listeners. Register listeners in an effect. `utils` omits
 `unsubscribe()` because React owns cleanup when the component unmounts or its
 sealed query changes.
 
+The hook infers the row type from the sealed query. `initialData` and
+`refreshQuery` must match it; they cannot remove selected columns or widen
+their types to make incompatible inputs fit.
+
 When `refreshQuery` is present, the integration renews before expiry
 and keeps retrying through capability expiry and transport outages. Existing
-data remains available with status `stale`. Changing the sealed query starts
-a new logical query; changing only the refresh callback does not.
+data remains available while `stale` indicates that a replacement capability
+is being obtained and `connecting` indicates active resubscription or transport
+recovery. Changing the sealed query starts a new logical query; changing only
+the refresh callback does not.
 
-For SSR, execute the same query on the server and pass its rows as
-`initialData`. React renders them immediately as stale data, and the first
-authoritative live-query reset reconciles any intervening changes.
+### Server-rendered initial data
+
+For SSR, execute the same query on the server and pass its decoded rows as
+`initialData`. React renders them immediately with status `connecting`, and the
+first authoritative live-query result reconciles any intervening changes.
+
+`initialData` must match the sealed query's live row type and the client's
+configured PostgreSQL parsers. HTTP serialization does not change that type:
+for example, a query whose rows contain `created_at: Date` still produces `Date`
+rows even if a JSON-aware RPC framework types the initial HTTP rows with
+`created_at: string`.
+
+Restore those values in application code before calling the hook:
+
+```tsx
+// A typed API response: query produces Date rows, initialData has JSON strings.
+const initialData = payload.initialData.map((row) => ({
+  ...row,
+  created_at: new Date(row.created_at),
+}));
+
+const { data } = useLiveQuery(payload.query, { initialData });
+// data: readonly { id: number; created_at: Date }[] | undefined
+```
+
+In this example, passing the serialized rows directly is a type error. No
+explicit row annotation or cast is needed for the conversion above. If your
+transport already restores dates, pass its rows directly.
+
+Convert before the first render that consumes the rows, not in an effect.
+The server render and the browser's initial hydration render must receive
+equivalent decoded values. Converting only on the server is insufficient if
+the data is subsequently serialized to JSON again. The hook does not perform
+this conversion; use your application's serializer or decoder.
 
 ### Optimistic mutations
 
@@ -155,5 +194,9 @@ subscription closes or enters a terminal error.
   hooks. It does not fetch sealed queries or own the client's lifetime.
 - `useLiveQuery(query, options)` owns one materialized subscription and
   cleans it up when the component unmounts or the sealed query changes.
+- `useRealtimeClient()` returns the provider's `RealtimeClient`, to pass to
+  `realtimeCollectionOptions()` from `@neon/realtime-tanstack` or to call
+  `subscribe()` directly. Subscriptions opened that way are not owned by
+  React.
 - `UseLiveQueryOptions`, `UseLiveQueryResult`, and `UseLiveQueryUtils` are
   exported for reusable component and framework typings.

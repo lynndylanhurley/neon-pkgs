@@ -7,6 +7,8 @@ import {
 	type NeonBranchSnapshot,
 	type NeonBucketSnapshot,
 	type NeonDataApiSnapshot,
+	type NeonRealtimeSnapshot,
+	PlatformError,
 } from "@neon/config";
 import { type AppliedChange, plan, pullConfig } from "@neon/config-runtime";
 import {
@@ -35,6 +37,7 @@ import {
 	formatInstallCommand,
 	resolvePackageManager,
 } from "../utils/package_manager.js";
+import { StagingOnlyError } from "../utils/staging.js";
 
 export type DevEnvContext = {
 	cwd: string;
@@ -136,6 +139,7 @@ const CLAIMABLE_UNSUPPORTED_SERVICES: ReadonlySet<NeonService> = new Set([
 	"ai-gateway",
 	"functions",
 	"object-storage",
+	"realtime",
 ]);
 
 const CLAIMABLE_RESOLVE_ORDER = ["postgres", "auth", "data-api"] as const;
@@ -347,7 +351,7 @@ const resolveClaimableNeonEnvVars = async (
 
 /**
  * Resolve the branch's Neon env vars (pooled / direct `DATABASE_URL`, plus Auth /
- * Data API when enabled) into a `{ KEY: value }` map. Shared by `neon dev` (which
+ * Data API / Realtime when enabled) into a `{ KEY: value }` map. Shared by `neon dev` (which
  * injects them) and `neon env pull` (which writes them to a `.env` file).
  *
  * Tiered:
@@ -363,7 +367,7 @@ const resolveClaimableNeonEnvVars = async (
  *      function still gets `NEON_FUNCTION_*_BASE_URL`. Otherwise `fetchEnv` evaluates
  *      the policy.
  *   2. no `neon.ts`, but a project + branch are known -> `pullConfig` reads the
- *      branch's live state (Auth / Data API enablement plus any object-storage
+ *      branch's live state (Auth / Data API / Realtime enablement plus any object-storage
  *      buckets) into a config, then `fetchEnv` resolves what is actually enabled —
  *      so a branch with a bucket gets its `AWS_*` storage vars pulled with no policy.
  *      Function invocation URLs are listed live (`functionUrls: "all-live"`) because
@@ -578,22 +582,27 @@ const resolveSelectedServices = async (
 	const checkAiGateway =
 		has("ai-gateway") &&
 		!selectedKeys.includes(NEON_ENV_VAR_KEYS.aiGateway.apiKey);
-	const [auth, dataApiEnabled, buckets, aiGatewayAvailable, functions] =
-		await Promise.all([
-			has("auth") ? api.getNeonAuth(projectId, branchId) : null,
-			has("data-api")
-				? readDataApiEnabled(api, projectId, branchId)
-				: null,
-			has("object-storage")
-				? api.listBranchBuckets(projectId, branchId)
-				: null,
-			checkAiGateway
-				? readAiGatewayAvailable(api, projectId, branchId)
-				: null,
-			directServices.includes("functions")
-				? api.listBranchFunctions(projectId, branchId)
-				: null,
-		]);
+	const [
+		auth,
+		dataApiEnabled,
+		realtime,
+		buckets,
+		aiGatewayAvailable,
+		functions,
+	] = await Promise.all([
+		has("auth") ? api.getNeonAuth(projectId, branchId) : null,
+		has("data-api") ? readDataApiEnabled(api, projectId, branchId) : null,
+		has("realtime") ? readRealtime(api, projectId, branchId) : null,
+		has("object-storage")
+			? api.listBranchBuckets(projectId, branchId)
+			: null,
+		checkAiGateway
+			? readAiGatewayAvailable(api, projectId, branchId)
+			: null,
+		directServices.includes("functions")
+			? api.listBranchFunctions(projectId, branchId)
+			: null,
+	]);
 
 	const callableFunctions = (functions ?? []).filter(
 		(fn) => fn.invocationUrl !== "",
@@ -622,6 +631,10 @@ const resolveSelectedServices = async (
 		{
 			authEnabled: auth !== null,
 			dataApiEnabled,
+			realtimeEnabled:
+				realtime === null
+					? false
+					: realtime.enabled || realtime.pending,
 			buckets: buckets ?? [],
 			// A token selection validates availability while minting. The read-only check is
 			// needed only when the base URL was selected on its own.
@@ -692,6 +705,21 @@ const readAiGatewayAvailable = async (
 	}
 };
 
+const readRealtime = async (
+	api: NeonApi,
+	projectId: string,
+	branchId: string,
+): Promise<NeonRealtimeSnapshot> => {
+	const getRealtime = api.getProjectBranchRealtime;
+	if (!getRealtime) {
+		throw new PlatformError(
+			ErrorCode.FeatureUnavailable,
+			"This NeonApi adapter does not implement getProjectBranchRealtime.",
+		);
+	}
+	return await getRealtime.call(api, projectId, branchId);
+};
+
 /** Neon's default database, and the one `fetchEnv` prefers when a branch has several. */
 const NEON_DEFAULT_DATABASE = "neondb";
 
@@ -709,6 +737,7 @@ const configForServices = (
 		authEnabled: boolean;
 		/** `null` when the read could not decide — see {@link readDataApiEnabled}. */
 		dataApiEnabled: boolean | null;
+		realtimeEnabled: boolean;
 		buckets: NeonBucketSnapshot[];
 		aiGatewayAvailable: boolean;
 	},
@@ -722,6 +751,7 @@ const configForServices = (
 	const provisionWith: Record<string, string> = {
 		auth: `${getCliName()} neon-auth enable`,
 		"data-api": `${getCliName()} data-api create`,
+		realtime: `${getCliName()} realtime enable`,
 		"object-storage": `${getCliName()} buckets create <name>`,
 	};
 	const notOnBranch = (service: NeonService, what: string): never => {
@@ -770,6 +800,12 @@ const configForServices = (
 			notOnBranch("data-api", "Data API integration");
 		}
 		config.dataApi = true;
+	}
+	if (services.includes("realtime")) {
+		if (!branch.realtimeEnabled) {
+			notOnBranch("realtime", "Realtime integration");
+		}
+		config.preview = { realtime: true };
 	}
 	if (services.includes("object-storage")) {
 		if (branch.buckets.length === 0) {
@@ -827,7 +863,11 @@ export const resolveDevEnv = async (
 		const { vars, credential } = await resolveNeonEnvVars(ctx);
 		return { vars, credential };
 	} catch (err) {
-		if (err instanceof DevEnvMismatchError) throw err;
+		if (
+			err instanceof DevEnvMismatchError ||
+			err instanceof StagingOnlyError
+		)
+			throw err;
 		if (err instanceof MissingBranchContextError) {
 			log.debug("dev: %s; skipping env injection", err.message);
 			return {

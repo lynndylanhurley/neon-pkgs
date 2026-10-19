@@ -23,8 +23,10 @@ import {
 } from "../claimable/state.js";
 import {
 	type ClaimableDataApiCreateBody,
+	type ClaimableService,
 	claimableDataApiCreateBody,
-	declaredNeonServices,
+	declaredClaimableNeonServices,
+	isClaimableService,
 } from "../config_services.js";
 import { applyContext, contextBranch, readContextFile } from "../context.js";
 import { isCi } from "../env.js";
@@ -33,7 +35,6 @@ import { log } from "../log.js";
 import {
 	deprecatedServiceMessage,
 	NEON_SERVICES,
-	type NeonService,
 	parseServices,
 	servicesFlagValue,
 	servicesOption,
@@ -56,7 +57,8 @@ type ClaimProps = {
 };
 
 type CreateProps = ClaimProps & {
-	services?: readonly NeonService[];
+	services?: readonly ClaimableService[];
+	regionId?: string;
 	config?: string;
 	file?: string;
 	envPull: boolean;
@@ -77,8 +79,10 @@ type DeleteProps = ClaimProps & {
 	yes: boolean;
 };
 
+const CLAIMABLE_SERVICES = NEON_SERVICES.filter(isClaimableService);
+
 const CAPABILITY_FOR_SERVICE: Readonly<
-	Record<NeonService, ClaimableCapability>
+	Record<ClaimableService, ClaimableCapability>
 > = {
 	postgres: "postgres",
 	auth: "auth",
@@ -98,7 +102,7 @@ const CAPABILITY_ORDER: readonly ClaimableCapability[] = [
 ];
 
 const SERVICE_FOR_CAPABILITY: Readonly<
-	Record<ClaimableCapability, NeonService>
+	Record<ClaimableCapability, ClaimableService>
 > = {
 	postgres: "postgres",
 	auth: "auth",
@@ -117,7 +121,7 @@ const cliServiceName = (capability: string): string =>
 		: capability;
 
 export const claimableCapabilities = (
-	services: readonly NeonService[],
+	services: readonly ClaimableService[],
 ): ClaimableCapability[] => {
 	const requested = new Set<ClaimableCapability>(["postgres"]);
 	for (const service of services) {
@@ -167,6 +171,7 @@ export const CLAIM_LIST_FIELDS = [
 export const CLAIM_CREATE_FIELDS = [
 	"project_id",
 	"branch_id",
+	"region_id",
 	"state",
 	"project_expires_at",
 	"granted_capabilities",
@@ -204,12 +209,17 @@ export const builder = (argv: yargs.Argv) =>
 						"service",
 						servicesOption({
 							key: "service",
-							allowed: NEON_SERVICES,
+							allowed: CLAIMABLE_SERVICES,
 							describe:
 								"Services to request for the claimable project",
 							also: "Postgres is always included. Services unavailable before claim are recorded and reported.",
 						}),
 					)
+					.option("region-id", {
+						describe:
+							"Region ID for the new project (e.g. aws-eu-central-1). Defaults to aws-us-east-2",
+						type: "string",
+					})
 					.option("file", {
 						describe:
 							"Target dotenv file. Defaults to an existing .env, otherwise .env.local",
@@ -232,7 +242,7 @@ export const builder = (argv: yargs.Argv) =>
 				const rawServices = servicesFlagValue(args.service);
 				const services = rawServices
 					? parseServices(rawServices, {
-							allowed: NEON_SERVICES,
+							allowed: CLAIMABLE_SERVICES,
 							flag: "--service",
 							onDeprecated: (used, canonical) =>
 								log.warning(
@@ -247,7 +257,7 @@ export const builder = (argv: yargs.Argv) =>
 						: undefined,
 				);
 				const configuredServices = policy
-					? declaredNeonServices(policy.config)
+					? declaredClaimableNeonServices(policy.config)
 					: [];
 				const dataApi = policy
 					? claimableDataApiCreateBody(policy.config)
@@ -426,6 +436,7 @@ export const create = async (props: CreateProps): Promise<void> => {
 	const registration = await client.register({
 		capabilities: claimableCapabilities(props.services ?? []),
 		source: "neon_cli",
+		...(props.regionId !== undefined ? { regionId: props.regionId } : {}),
 		...(props.dataApi ? { dataApi: props.dataApi } : {}),
 	});
 	const stored: StoredClaimableCredentials = {
@@ -499,6 +510,7 @@ export const create = async (props: CreateProps): Promise<void> => {
 			{
 				project_id: registration.project.id,
 				branch_id: registration.project.branchId,
+				region_id: registration.project.regionId,
 				state: "unclaimed",
 				project_expires_at: registration.project.expiresAt,
 				granted_capabilities: granted,

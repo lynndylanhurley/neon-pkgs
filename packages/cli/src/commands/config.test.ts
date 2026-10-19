@@ -12,6 +12,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type {
 	ComputeSettings,
+	ConfigureRealtimeInput,
 	CreateBranchInput,
 	CreateBucketInput,
 	CreateCredentialInput,
@@ -31,6 +32,8 @@ import type {
 	NeonFunctionDeploymentSnapshot,
 	NeonFunctionSnapshot,
 	NeonProjectSnapshot,
+	NeonRealtimeSecret,
+	NeonRealtimeSnapshot,
 	NeonRoleSnapshot,
 	NeonTriggerSnapshot,
 } from "@neon/config";
@@ -72,6 +75,15 @@ class FakeNeonApi implements NeonApi {
 		slug: string;
 		input: DeployFunctionInput;
 	}[] = [];
+	readonly enableRealtimeCalls: Array<{
+		projectId: string;
+		branchId: string;
+		input?: ConfigureRealtimeInput;
+	}> = [];
+	private realtime: NeonRealtimeSnapshot = {
+		enabled: false,
+		pending: false,
+	};
 	/** Functions materialized by a deploy, keyed by slug (Neon creates on first deploy). */
 	private readonly functions = new Map<string, NeonFunctionSnapshot>();
 	private readonly customDomains = new Map<
@@ -208,6 +220,34 @@ class FakeNeonApi implements NeonApi {
 	}
 
 	async deleteProjectBranchDataApi(): Promise<void> {}
+
+	async getProjectBranchRealtime(): Promise<NeonRealtimeSnapshot> {
+		return structuredClone(this.realtime);
+	}
+
+	async getProjectBranchRealtimeSecret(): Promise<NeonRealtimeSecret> {
+		return { secret: "nrt_live_1_cli-config-test", pending: false };
+	}
+
+	async enableProjectBranchRealtime(
+		projectId: string,
+		branchId: string,
+		input?: ConfigureRealtimeInput,
+	): Promise<void> {
+		this.enableRealtimeCalls.push({ projectId, branchId, input });
+		this.realtime = {
+			enabled: true,
+			pending: false,
+			invocationUrl: "wss://realtime.fake.neon.tech/v1",
+			...(input?.allowedOrigins !== undefined
+				? { allowedOrigins: [...input.allowedOrigins] }
+				: {}),
+		};
+	}
+
+	async disableProjectBranchRealtime(): Promise<void> {
+		this.realtime = { enabled: false, pending: false };
+	}
 
 	async listBranchBuckets(): Promise<NeonBucketSnapshot[]> {
 		return [];
@@ -711,6 +751,40 @@ describe("config commands", () => {
 			projectId: PROJECT_ID,
 			branchId: BRANCH_ID,
 		});
+	});
+
+	it("plans and applies Realtime through the config runtime", async () => {
+		const api = new FakeNeonApi();
+		const config = writeConfig(
+			'export default { preview: { realtime: { allowedOrigins: ["https://app.example.com"] } } };\n',
+		);
+		const planned = captureOut();
+
+		await planCmd({ ...baseProps(api, planned.stream), config });
+
+		const plan = JSON.parse(planned.read());
+		expect(plan.dryRun).toBe(true);
+		expect(plan.applied).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					action: "create",
+					identifier: "realtime",
+				}),
+			]),
+		);
+		expect(api.enableRealtimeCalls).toHaveLength(0);
+
+		const applied = captureOut();
+		await applyCmd({ ...baseProps(api, applied.stream), config });
+
+		expect(JSON.parse(applied.read()).dryRun).toBe(false);
+		expect(api.enableRealtimeCalls).toEqual([
+			{
+				projectId: PROJECT_ID,
+				branchId: BRANCH_ID,
+				input: { allowedOrigins: ["https://app.example.com"] },
+			},
+		]);
 	});
 
 	it("runs deploy.before and deploy.after (Preview lifecycle hooks) around a real apply", async () => {
@@ -1361,6 +1435,30 @@ describe("config commands", () => {
 		const envPath = join(cwd, ".env.local");
 		expect(existsSync(envPath)).toBe(true);
 		expect(readFileSync(envPath, "utf8")).toContain("DATABASE_URL=");
+	});
+
+	it("pulls Realtime env after provisioning it", async () => {
+		const api = new FakeNeonApi();
+		const { stream } = captureOut();
+		const config = writeConfig(
+			"export default { preview: { realtime: true } };\n",
+		);
+
+		await applyCmd({
+			...baseProps(api, stream),
+			output: "table",
+			config,
+			cwd,
+			envPull: true,
+		});
+
+		const env = readFileSync(join(cwd, ".env.local"), "utf8");
+		expect(env).toContain(
+			"NEON_REALTIME_URL=wss://realtime.fake.neon.tech/v1",
+		);
+		expect(env).toContain(
+			"NEON_REALTIME_SECRET=nrt_live_1_cli-config-test",
+		);
 	});
 
 	it("lists the project's branches once per step of an apply with its env pull", async () => {

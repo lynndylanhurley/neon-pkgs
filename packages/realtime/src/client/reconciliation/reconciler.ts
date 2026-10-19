@@ -50,18 +50,10 @@ export interface ReconciliationLifecycle {
 	interrupted(): void;
 }
 
-export interface ReconciliationLimits {
-	/** Bytes retained while assembling one baseline sync. */
-	readonly maxBaselineSyncBytes: number;
-	/** Bytes retained by one publication or all post-baseline-sync backlogs. */
-	readonly maxPublicationBytes: number;
-}
-
 export interface ReconciliationEventSink {
 	publicationCommitted(bodyCount: number): void;
 }
 
-const DEFAULT_STAGING_BYTES = 16 * 1024 * 1024;
 const SILENT_RECONCILIATION_EVENTS: ReconciliationEventSink = Object.freeze({
 	publicationCommitted: () => undefined,
 });
@@ -74,15 +66,9 @@ interface BaselineSyncVersion {
 interface PendingBaselineSync {
 	readonly version: BaselineSyncVersion;
 	readonly mvcc: MvccSnapshot;
-	bytes: number;
 	nextBatch: number;
 	rows: WireRow[];
 	rowKeys: Set<string>;
-}
-
-interface BufferedBatch {
-	readonly batch: ReconciledBatch;
-	readonly bytes: number;
 }
 
 interface TargetState {
@@ -94,8 +80,7 @@ interface TargetState {
 	nextSequence: bigint;
 	latestBaselineSync?: BaselineSyncVersion;
 	baselineSync?: PendingBaselineSync;
-	backlog: BufferedBatch[];
-	backlogBytes: number;
+	backlog: ReconciledBatch[];
 	live: boolean;
 }
 
@@ -103,7 +88,6 @@ interface StagedTarget {
 	readonly changes: WireChange[];
 	readonly txids: readonly string[];
 	readonly nextSequence: bigint;
-	bytes: number;
 }
 
 interface StagedReset {
@@ -113,7 +97,6 @@ interface StagedReset {
 
 interface PendingPublication {
 	readonly id: string;
-	bytes: number;
 	nextBody: number;
 	readonly batches: Map<string, StagedTarget>;
 	readonly resets: Map<string, StagedReset>;
@@ -142,33 +125,11 @@ type ReconciliationMessage = Extract<
  */
 export class BaselineSyncPublicationReconciler {
 	private readonly targets = new Map<string, TargetState>();
-	private readonly maxBaselineSyncBytes: number;
-	private readonly maxPublicationBytes: number;
-	private backlogBytes = 0;
 	private publication?: PendingPublication;
 
 	constructor(
-		limits: Partial<ReconciliationLimits> = {},
 		private readonly events: ReconciliationEventSink = SILENT_RECONCILIATION_EVENTS,
-	) {
-		this.maxBaselineSyncBytes = positiveLimit(
-			limits.maxBaselineSyncBytes ?? DEFAULT_STAGING_BYTES,
-			"maxBaselineSyncBytes",
-		);
-		this.maxPublicationBytes = positiveLimit(
-			limits.maxPublicationBytes ?? DEFAULT_STAGING_BYTES,
-			"maxPublicationBytes",
-		);
-	}
-
-	/** Total raw wire bytes currently retained by in-progress reconciliation. */
-	get stagingBytes(): number {
-		let bytes = this.backlogBytes + (this.publication?.bytes ?? 0);
-		for (const state of this.targets.values()) {
-			bytes += state.baselineSync?.bytes ?? 0;
-		}
-		return bytes;
-	}
+	) {}
 
 	add(input: AddReconciliationTarget): void {
 		if (this.targets.has(input.liveId)) {
@@ -182,7 +143,6 @@ export class BaselineSyncPublicationReconciler {
 			epoch: BigInt(input.epoch),
 			nextSequence: BigInt(input.firstSequence),
 			backlog: [],
-			backlogBytes: 0,
 			live: false,
 		});
 	}
@@ -214,15 +174,9 @@ export class BaselineSyncPublicationReconciler {
 	clear(): void {
 		this.targets.clear();
 		this.publication = undefined;
-		this.backlogBytes = 0;
 	}
 
-	accept(
-		message: ReconciliationMessage,
-		byteLength: number,
-		mvcc?: ParsedMvccSnapshot,
-	): void {
-		const bytes = messageBytes(byteLength);
+	accept(message: ReconciliationMessage, mvcc?: ParsedMvccSnapshot): void {
 		if (
 			this.publication &&
 			(message.type === "baseline_sync_start" ||
@@ -236,28 +190,27 @@ export class BaselineSyncPublicationReconciler {
 				this.progress(mvcc ?? parseMvccSnapshot(message.mvcc));
 				return;
 			case "baseline_sync_start":
-				this.baselineSyncStart(message, bytes);
+				this.baselineSyncStart(message);
 				return;
 			case "baseline_sync_batch":
-				this.baselineSyncBatch(message, bytes);
+				this.baselineSyncBatch(message);
 				return;
 			case "baseline_sync_end":
-				this.baselineSyncEnd(message, bytes);
+				this.baselineSyncEnd(message);
 				return;
 			case "open":
-				this.publicationOpen(message.publication_id, bytes);
+				this.publicationOpen(message.publication_id);
 				return;
 			case "keyed_results":
-				this.keyedResults(message, bytes);
+				this.keyedResults(message);
 				return;
 			case "reset_required":
-				this.stageReset(message, bytes);
+				this.stageReset(message);
 				return;
 			case "commit":
 				this.publicationCommit(
 					message.publication_id,
 					message.body_count,
-					bytes,
 				);
 				return;
 		}
@@ -280,7 +233,6 @@ export class BaselineSyncPublicationReconciler {
 			ReconciliationMessage,
 			{ type: "baseline_sync_start" }
 		>,
-		bytes: number,
 	): void {
 		const state = this.target(message.live_id);
 		if (!state.active) return;
@@ -300,12 +252,10 @@ export class BaselineSyncPublicationReconciler {
 		) {
 			throw new ProtocolError("invalid baseline sync start");
 		}
-		this.checkBaselineSyncBytes(bytes);
 		state.latestBaselineSync = version;
 		state.baselineSync = {
 			version,
 			mvcc: message.mvcc,
-			bytes,
 			nextBatch: 0,
 			rows: [],
 			rowKeys: new Set(),
@@ -318,7 +268,6 @@ export class BaselineSyncPublicationReconciler {
 			ReconciliationMessage,
 			{ type: "baseline_sync_batch" }
 		>,
-		bytes: number,
 	): void {
 		const state = this.target(message.live_id);
 		if (!state.active) return;
@@ -340,7 +289,6 @@ export class BaselineSyncPublicationReconciler {
 		) {
 			throw new ProtocolError("invalid baseline sync batch");
 		}
-		this.checkBaselineSyncBytes(baselineSync.bytes + bytes);
 		for (const row of message.rows) {
 			if (row.values.length !== state.columnCount) {
 				throw new ProtocolError(
@@ -355,13 +303,11 @@ export class BaselineSyncPublicationReconciler {
 			baselineSync.rowKeys.add(row.row_key);
 			baselineSync.rows.push(row);
 		}
-		baselineSync.bytes += bytes;
 		baselineSync.nextBatch += 1;
 	}
 
 	private baselineSyncEnd(
 		message: Extract<ReconciliationMessage, { type: "baseline_sync_end" }>,
-		bytes: number,
 	): void {
 		const state = this.target(message.live_id);
 		if (!state.active) return;
@@ -383,8 +329,6 @@ export class BaselineSyncPublicationReconciler {
 		) {
 			throw new ProtocolError("invalid baseline sync end");
 		}
-		this.checkBaselineSyncBytes(baselineSync.bytes + bytes);
-
 		// The exact-frontier baseline-sync contract guarantees that every
 		// subsequently delivered publication is newer than the baseline. Replay
 		// the complete contiguous backlog; interpreting transaction IDs against
@@ -395,9 +339,9 @@ export class BaselineSyncPublicationReconciler {
 		this.releaseBacklog(state);
 		try {
 			state.target.installReset(rows);
-			for (const buffered of replay) {
-				if (buffered.batch.changes.length > 0) {
-					state.target.applyBatch(buffered.batch.changes);
+			for (const batch of replay) {
+				if (batch.changes.length > 0) {
+					state.target.applyBatch(batch.changes);
 				}
 			}
 		} catch (error) {
@@ -408,20 +352,17 @@ export class BaselineSyncPublicationReconciler {
 		}
 		state.target.baselineSyncCompleted(message.batch_count);
 		state.target.publishReset(rows, baselineSync.mvcc);
-		for (const buffered of replay)
-			state.target.publishBatch(buffered.batch);
+		for (const batch of replay) state.target.publishBatch(batch);
 		state.live = true;
 		state.lifecycle?.baselineCompleted();
 		state.target.caughtUp();
 	}
 
-	private publicationOpen(publicationId: string, bytes: number): void {
+	private publicationOpen(publicationId: string): void {
 		if (this.publication)
 			throw new ProtocolError("overlapping publication");
-		this.checkPublicationBytes(bytes);
 		this.publication = {
 			id: publicationId,
-			bytes,
 			nextBody: 0,
 			batches: new Map(),
 			resets: new Map(),
@@ -430,12 +371,10 @@ export class BaselineSyncPublicationReconciler {
 
 	private keyedResults(
 		message: Extract<ReconciliationMessage, { type: "keyed_results" }>,
-		bytes: number,
 	): void {
 		const publication = this.publicationBody(
 			message.publication_id,
 			message.index,
-			bytes,
 		);
 		const bodyTargets = new Set<string>();
 		for (const target of message.targets) {
@@ -469,13 +408,11 @@ export class BaselineSyncPublicationReconciler {
 			}
 			if (existing) {
 				existing.changes.push(...message.changes);
-				existing.bytes += bytes;
 			} else {
 				publication.batches.set(target.live_id, {
 					changes: [...message.changes],
 					txids: message.txids,
 					nextSequence: sequence + 1n,
-					bytes,
 				});
 			}
 		}
@@ -483,12 +420,10 @@ export class BaselineSyncPublicationReconciler {
 
 	private stageReset(
 		message: Extract<ReconciliationMessage, { type: "reset_required" }>,
-		bytes: number,
 	): void {
 		const publication = this.publicationBody(
 			message.publication_id,
 			message.index,
-			bytes,
 		);
 		for (const target of message.targets) {
 			const state = this.target(target.live_id);
@@ -508,11 +443,7 @@ export class BaselineSyncPublicationReconciler {
 		}
 	}
 
-	private publicationCommit(
-		publicationId: string,
-		bodyCount: number,
-		bytes: number,
-	): void {
+	private publicationCommit(publicationId: string, bodyCount: number): void {
 		const publication = this.publication;
 		if (
 			!publication ||
@@ -520,19 +451,6 @@ export class BaselineSyncPublicationReconciler {
 			publication.nextBody !== bodyCount
 		) {
 			throw new ProtocolError("invalid publication commit");
-		}
-		this.checkPublicationBytes(publication.bytes + bytes);
-
-		let projectedBacklogBytes = this.backlogBytes;
-		for (const [liveId, staged] of publication.batches) {
-			if (!this.target(liveId).live)
-				projectedBacklogBytes += staged.bytes;
-		}
-		for (const liveId of publication.resets.keys()) {
-			projectedBacklogBytes -= this.target(liveId).backlogBytes;
-		}
-		if (projectedBacklogBytes > this.maxPublicationBytes) {
-			throw new ProtocolError("change backlog exceeds the byte limit");
 		}
 		this.publication = undefined;
 
@@ -548,12 +466,7 @@ export class BaselineSyncPublicationReconciler {
 				txids: Object.freeze([...staged.txids]),
 			});
 			if (state.live) immediate.push({ state, batch });
-			else {
-				const buffered = Object.freeze({ batch, bytes: staged.bytes });
-				state.backlog.push(buffered);
-				state.backlogBytes += staged.bytes;
-				this.backlogBytes += staged.bytes;
-			}
+			else state.backlog.push(batch);
 		}
 		const resetStates: TargetState[] = [];
 		for (const [liveId, reset] of publication.resets) {
@@ -598,7 +511,6 @@ export class BaselineSyncPublicationReconciler {
 	private publicationBody(
 		publicationId: string,
 		index: number,
-		bytes: number,
 	): PendingPublication {
 		const publication = this.publication;
 		if (
@@ -608,28 +520,12 @@ export class BaselineSyncPublicationReconciler {
 		) {
 			throw new ProtocolError("invalid publication body");
 		}
-		this.checkPublicationBytes(publication.bytes + bytes);
-		publication.bytes += bytes;
 		publication.nextBody += 1;
 		return publication;
 	}
 
 	private releaseBacklog(state: TargetState): void {
-		this.backlogBytes -= state.backlogBytes;
-		state.backlogBytes = 0;
 		state.backlog = [];
-	}
-
-	private checkBaselineSyncBytes(bytes: number): void {
-		if (bytes > this.maxBaselineSyncBytes) {
-			throw new ProtocolError("baseline sync exceeds the byte limit");
-		}
-	}
-
-	private checkPublicationBytes(bytes: number): void {
-		if (bytes > this.maxPublicationBytes) {
-			throw new ProtocolError("publication exceeds the byte limit");
-		}
 	}
 
 	private target(liveId: string): TargetState {
@@ -637,22 +533,6 @@ export class BaselineSyncPublicationReconciler {
 		if (!target) throw new ProtocolError("unknown live ID");
 		return target;
 	}
-}
-
-function positiveLimit(value: number, name: string): number {
-	if (!Number.isSafeInteger(value) || value <= 0) {
-		throw new RangeError(`${name} must be a positive safe integer`);
-	}
-	return value;
-}
-
-function messageBytes(value: number): number {
-	if (!Number.isSafeInteger(value) || value <= 0) {
-		throw new RangeError(
-			"message byte length must be a positive safe integer",
-		);
-	}
-	return value;
 }
 
 function baselineSyncVersion(

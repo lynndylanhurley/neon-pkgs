@@ -21,6 +21,19 @@ export const resolveEnvFilePath = (
 };
 
 /**
+ * The dotenv files `neon dev` loads by default, in load order: the project directory's
+ * `.env`, then `.env.local`, whose values override it. Missing files are skipped.
+ */
+export const defaultDevEnvFiles = (
+	location: ProjectLocation & { cwd: string },
+): string[] => {
+	const dir = projectDir(location);
+	return [join(dir, ".env"), join(dir, ".env.local")].filter((path) =>
+		existsSync(path),
+	);
+};
+
+/**
  * Options for {@link mergeEnvFile} / {@link mergeEnvContent}.
  */
 export type MergeEnvOptions = {

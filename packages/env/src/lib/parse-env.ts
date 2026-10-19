@@ -29,6 +29,7 @@ import {
 	type NeonEnv,
 	type NeonFunctionUrlEnv,
 	type NeonPostgresEnv,
+	type NeonRealtimeEnv,
 	type NeonStorageEnv,
 	parseFunctionBaseUrlKey,
 	type SelectableEnvKey,
@@ -106,6 +107,16 @@ type FunctionEnvKeysOf<
  * The extra `function` namespace added to `parseEnv`'s result when called with a function
  * slug scope: the declared env-var keys for that function, each resolved to a `string`.
  */
+/**
+ * What `parseEnv` returns without a key filter: {@link NeonEnv} with `functions` optional,
+ * because the deployed Functions runtime does not inject `NEON_FUNCTION_<SLUG>_BASE_URL`.
+ * Select the key (`parseEnv(config, ["NEON_FUNCTION_HELLO_BASE_URL"])`) to require it.
+ */
+export type ParsedNeonEnv<C extends Config> =
+	NeonEnv<C> extends { functions: infer F }
+		? Omit<NeonEnv<C>, "functions"> & { functions?: F }
+		: NeonEnv<C>;
+
 export type NeonFunctionEnv<C extends Config, S extends string> = {
 	function: Record<FunctionEnvKeysOf<C, S>, string>;
 };
@@ -142,6 +153,15 @@ const dataApiEnvSchema = z.object({
 	NEON_DATA_API_URL: z
 		.string({ message: "NEON_DATA_API_URL is missing" })
 		.min(1, "NEON_DATA_API_URL must not be empty"),
+});
+
+const realtimeEnvSchema = z.object({
+	NEON_REALTIME_URL: z
+		.string({ message: "NEON_REALTIME_URL is missing" })
+		.min(1, "NEON_REALTIME_URL must not be empty"),
+	NEON_REALTIME_SECRET: z
+		.string({ message: "NEON_REALTIME_SECRET is missing" })
+		.min(1, "NEON_REALTIME_SECRET must not be empty"),
 });
 
 const storageEnvSchema = z.object({
@@ -199,8 +219,8 @@ function isServiceEnabledInput(
  * - You are **inside a deployed Neon Function**, whose env was uploaded at `config apply`.
  *
  * Unlike the old API, `parseEnv` does **not** take a branch name: the secret set is now
- * static (top-level `config.auth` / `config.dataApi`), so it reads those directly without
- * evaluating the per-branch closure.
+ * static (`config.auth` / `config.dataApi` / `config.preview.realtime`), so it reads those
+ * directly without evaluating the per-branch closure.
  *
  * The second argument is a **scope** or a **key filter**:
  * - omitted — *external* scope (app bootstrap, build scripts, your dev machine). Returns the
@@ -236,7 +256,7 @@ function isServiceEnabledInput(
  * postgres.databaseUrl; // string — `databaseUrlUnpooled` is absent
  * ```
  */
-export function parseEnv<const C extends Config>(config: C): NeonEnv<C>;
+export function parseEnv<const C extends Config>(config: C): ParsedNeonEnv<C>;
 // Overload order is load-bearing for **editor autocomplete**, not for type checking: when the
 // argument is a half-typed string literal the call resolves against no signature, and the
 // editor takes its string-literal completions from the first candidate overload. With the
@@ -251,7 +271,7 @@ export function parseEnv<
 >(
 	config: C,
 	scope: FunctionScopeField<C, S>,
-): NeonEnv<C> & NeonFunctionEnv<C, S>;
+): ParsedNeonEnv<C> & NeonFunctionEnv<C, S>;
 export function parseEnv<
 	const C extends Config,
 	const K extends SelectableEnvKey<C>,
@@ -321,6 +341,25 @@ export function parseEnv(
 		}
 	}
 
+	if (
+		config.preview?.realtime !== undefined &&
+		config.preview.realtime !== false
+	) {
+		const realtime = realtimeEnvSchema.safeParse({
+			NEON_REALTIME_URL: source.NEON_REALTIME_URL,
+			NEON_REALTIME_SECRET: source.NEON_REALTIME_SECRET,
+		});
+		if (realtime.success) {
+			result.realtime = {
+				url: realtime.data.NEON_REALTIME_URL,
+				secret: realtime.data.NEON_REALTIME_SECRET,
+			} satisfies NeonRealtimeEnv;
+		} else {
+			for (const issue of realtime.error.issues)
+				issues.push(issue.message);
+		}
+	}
+
 	if (configWantsStorage(config)) {
 		const storage = storageEnvSchema.safeParse({
 			AWS_ACCESS_KEY_ID: source.AWS_ACCESS_KEY_ID,
@@ -364,6 +403,9 @@ export function parseEnv(
 		const functions: Record<string, NeonFunctionUrlEnv> = {};
 		for (const slug of declaredFunctionSlugs) {
 			const key = functionBaseUrlKey(slug);
+			// The Functions runtime does not inject NEON_FUNCTION_<SLUG>_BASE_URL, so an
+			// unset one leaves `functions` out instead of failing every deployed function.
+			if (source[key] === undefined) continue;
 			const parsed = readFunctionBaseUrl(key, source[key]);
 			if (parsed.ok) {
 				functions[slug] = { baseUrl: parsed.value };
@@ -480,6 +522,8 @@ const FILTERABLE_ENV_KEYS: Record<string, readonly [string, string]> = {
 	NEON_AUTH_BASE_URL: ["auth", "baseUrl"],
 	NEON_AUTH_JWKS_URL: ["auth", "jwksUrl"],
 	NEON_DATA_API_URL: ["dataApi", "url"],
+	NEON_REALTIME_URL: ["realtime", "url"],
+	NEON_REALTIME_SECRET: ["realtime", "secret"],
 	AWS_ACCESS_KEY_ID: ["storage", "accessKeyId"],
 	AWS_SECRET_ACCESS_KEY: ["storage", "secretAccessKey"],
 	AWS_ENDPOINT_URL_S3: ["storage", "endpoint"],

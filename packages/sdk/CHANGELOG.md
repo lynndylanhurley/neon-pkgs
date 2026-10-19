@@ -1,5 +1,23 @@
 # @neon/sdk
 
+## 7.3.0
+
+### Minor Changes
+
+- 0cee585: Add the Neon Auth OAuth provider endpoints from the latest Neon API spec. `@neon/sdk/raw` gains `getNeonAuthOAuthProviderPlugin`, `updateNeonAuthOAuthProviderPlugin`, and `listNeonAuthOAuthClients` / `createNeonAuthOAuthClient` / `getNeonAuthOAuthClient` / `updateNeonAuthOAuthClient` / `deleteNeonAuthOAuthClient` / `rotateNeonAuthOAuthClientSecret`; `@neon/tools/schemas` gains their request schemas.
+
+## 7.2.0
+
+### Minor Changes
+
+- 5f572b6: Add `neon.realtime` with `get`, `enable`, `disable`, `secret`, and `rotateSecret` for branch Realtime. `enable` waits until the change is applied by default; `disable` and `rotateSecret` wait with `waitForReadiness: true`. `@neon/tools` publishes `realtime.get`, `realtime.enable`, `realtime.disable`, and `realtime.rotateSecret` as tools, which wait for the change; `realtime.secret` is not a tool.
+
+## 7.1.0
+
+### Minor Changes
+
+- 025988c: Add generated API methods and types for enabling, inspecting, disabling, and rotating Neon Realtime on a branch, including retrieving its shared secret.
+
 ## 7.0.1
 
 ### Patch Changes

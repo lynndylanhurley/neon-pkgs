@@ -18,6 +18,7 @@ import {
 	createNeonAuth as _createNeonAuth,
 	createNeonAuthIntegration as _createNeonAuthIntegration,
 	createNeonAuthNewUser as _createNeonAuthNewUser,
+	createNeonAuthOAuthClient as _createNeonAuthOAuthClient,
 	createNeonAuthProviderSdkKeys as _createNeonAuthProviderSdkKeys,
 	createOrganizationInvitations as _createOrganizationInvitations,
 	createOrgApiKey as _createOrgApiKey,
@@ -38,6 +39,7 @@ import {
 	deleteBranchNeonAuthUser as _deleteBranchNeonAuthUser,
 	deleteNeonAuthDomainFromRedirectUriWhitelist as _deleteNeonAuthDomainFromRedirectUriWhitelist,
 	deleteNeonAuthIntegration as _deleteNeonAuthIntegration,
+	deleteNeonAuthOAuthClient as _deleteNeonAuthOAuthClient,
 	deleteNeonAuthOauthProvider as _deleteNeonAuthOauthProvider,
 	deleteNeonAuthUser as _deleteNeonAuthUser,
 	deleteOrganizationSpendingLimit as _deleteOrganizationSpendingLimit,
@@ -58,6 +60,8 @@ import {
 	deleteProjectVpcEndpoint as _deleteProjectVpcEndpoint,
 	deleteSnapshot as _deleteSnapshot,
 	disableNeonAuth as _disableNeonAuth,
+	disableProjectBranchRealtime as _disableProjectBranchRealtime,
+	enableProjectBranchRealtime as _enableProjectBranchRealtime,
 	finalizeRestoreBranch as _finalizeRestoreBranch,
 	getActiveRegions as _getActiveRegions,
 	getAnonymizedBranchStatus as _getAnonymizedBranchStatus,
@@ -75,6 +79,8 @@ import {
 	getNeonAuthEmailAndPasswordConfig as _getNeonAuthEmailAndPasswordConfig,
 	getNeonAuthEmailProvider as _getNeonAuthEmailProvider,
 	getNeonAuthEmailServer as _getNeonAuthEmailServer,
+	getNeonAuthOAuthClient as _getNeonAuthOAuthClient,
+	getNeonAuthOAuthProviderPlugin as _getNeonAuthOAuthProviderPlugin,
 	getNeonAuthPhoneNumberPlugin as _getNeonAuthPhoneNumberPlugin,
 	getNeonAuthPluginConfigs as _getNeonAuthPluginConfigs,
 	getNeonAuthWebhookConfig as _getNeonAuthWebhookConfig,
@@ -92,6 +98,8 @@ import {
 	getProjectBranchDataApi as _getProjectBranchDataApi,
 	getProjectBranchDatabase as _getProjectBranchDatabase,
 	getProjectBranchFunction as _getProjectBranchFunction,
+	getProjectBranchRealtime as _getProjectBranchRealtime,
+	getProjectBranchRealtimeSecret as _getProjectBranchRealtimeSecret,
 	getProjectBranchRole as _getProjectBranchRole,
 	getProjectBranchRolePassword as _getProjectBranchRolePassword,
 	getProjectBranchSchema as _getProjectBranchSchema,
@@ -108,6 +116,7 @@ import {
 	listBranchNeonAuthTrustedDomains as _listBranchNeonAuthTrustedDomains,
 	listCredentials as _listCredentials,
 	listNeonAuthIntegrations as _listNeonAuthIntegrations,
+	listNeonAuthOAuthClients as _listNeonAuthOAuthClients,
 	listNeonAuthOauthProviders as _listNeonAuthOauthProviders,
 	listNeonAuthRedirectUriWhitelistDomains as _listNeonAuthRedirectUriWhitelistDomains,
 	listOrganizationVpcEndpoints as _listOrganizationVpcEndpoints,
@@ -148,6 +157,8 @@ import {
 	revokeOrgApiKey as _revokeOrgApiKey,
 	revokePermissionFromProject as _revokePermissionFromProject,
 	rotateCredential as _rotateCredential,
+	rotateNeonAuthOAuthClientSecret as _rotateNeonAuthOAuthClientSecret,
+	rotateProjectBranchRealtimeSecret as _rotateProjectBranchRealtimeSecret,
 	sendNeonAuthEmailProviderTest as _sendNeonAuthEmailProviderTest,
 	sendNeonAuthTestEmail as _sendNeonAuthTestEmail,
 	setDefaultProjectBranch as _setDefaultProjectBranch,
@@ -168,7 +179,9 @@ import {
 	updateNeonAuthEmailProvider as _updateNeonAuthEmailProvider,
 	updateNeonAuthEmailServer as _updateNeonAuthEmailServer,
 	updateNeonAuthMagicLinkPlugin as _updateNeonAuthMagicLinkPlugin,
+	updateNeonAuthOAuthClient as _updateNeonAuthOAuthClient,
 	updateNeonAuthOauthProvider as _updateNeonAuthOauthProvider,
+	updateNeonAuthOAuthProviderPlugin as _updateNeonAuthOAuthProviderPlugin,
 	updateNeonAuthOrganizationPlugin as _updateNeonAuthOrganizationPlugin,
 	updateNeonAuthPhoneNumberPlugin as _updateNeonAuthPhoneNumberPlugin,
 	updateNeonAuthUserRole as _updateNeonAuthUserRole,
@@ -199,6 +212,7 @@ export const createCredential = wrapRaw(_createCredential);
 export const createNeonAuth = wrapRaw(_createNeonAuth);
 export const createNeonAuthIntegration = wrapRaw(_createNeonAuthIntegration);
 export const createNeonAuthNewUser = wrapRaw(_createNeonAuthNewUser);
+export const createNeonAuthOAuthClient = wrapRaw(_createNeonAuthOAuthClient);
 export const createNeonAuthProviderSdkKeys = wrapRaw(_createNeonAuthProviderSdkKeys);
 export const createOrganizationInvitations = wrapRaw(_createOrganizationInvitations);
 export const createOrgApiKey = wrapRaw(_createOrgApiKey);
@@ -219,6 +233,7 @@ export const deleteBranchNeonAuthTrustedDomain = wrapRaw(_deleteBranchNeonAuthTr
 export const deleteBranchNeonAuthUser = wrapRaw(_deleteBranchNeonAuthUser);
 export const deleteNeonAuthDomainFromRedirectUriWhitelist = wrapRaw(_deleteNeonAuthDomainFromRedirectUriWhitelist);
 export const deleteNeonAuthIntegration = wrapRaw(_deleteNeonAuthIntegration);
+export const deleteNeonAuthOAuthClient = wrapRaw(_deleteNeonAuthOAuthClient);
 export const deleteNeonAuthOauthProvider = wrapRaw(_deleteNeonAuthOauthProvider);
 export const deleteNeonAuthUser = wrapRaw(_deleteNeonAuthUser);
 export const deleteOrganizationSpendingLimit = wrapRaw(_deleteOrganizationSpendingLimit);
@@ -239,6 +254,8 @@ export const deleteProjectJwks = wrapRaw(_deleteProjectJwks);
 export const deleteProjectVpcEndpoint = wrapRaw(_deleteProjectVpcEndpoint);
 export const deleteSnapshot = wrapRaw(_deleteSnapshot);
 export const disableNeonAuth = wrapRaw(_disableNeonAuth);
+export const disableProjectBranchRealtime = wrapRaw(_disableProjectBranchRealtime);
+export const enableProjectBranchRealtime = wrapRaw(_enableProjectBranchRealtime);
 export const finalizeRestoreBranch = wrapRaw(_finalizeRestoreBranch);
 export const getActiveRegions = wrapRaw(_getActiveRegions);
 export const getAnonymizedBranchStatus = wrapRaw(_getAnonymizedBranchStatus);
@@ -256,6 +273,8 @@ export const getNeonAuthAllowLocalhost = wrapRaw(_getNeonAuthAllowLocalhost);
 export const getNeonAuthEmailAndPasswordConfig = wrapRaw(_getNeonAuthEmailAndPasswordConfig);
 export const getNeonAuthEmailProvider = wrapRaw(_getNeonAuthEmailProvider);
 export const getNeonAuthEmailServer = wrapRaw(_getNeonAuthEmailServer);
+export const getNeonAuthOAuthClient = wrapRaw(_getNeonAuthOAuthClient);
+export const getNeonAuthOAuthProviderPlugin = wrapRaw(_getNeonAuthOAuthProviderPlugin);
 export const getNeonAuthPhoneNumberPlugin = wrapRaw(_getNeonAuthPhoneNumberPlugin);
 export const getNeonAuthPluginConfigs = wrapRaw(_getNeonAuthPluginConfigs);
 export const getNeonAuthWebhookConfig = wrapRaw(_getNeonAuthWebhookConfig);
@@ -273,6 +292,8 @@ export const getProjectBranchBucketObject = wrapRaw(_getProjectBranchBucketObjec
 export const getProjectBranchDataApi = wrapRaw(_getProjectBranchDataApi);
 export const getProjectBranchDatabase = wrapRaw(_getProjectBranchDatabase);
 export const getProjectBranchFunction = wrapRaw(_getProjectBranchFunction);
+export const getProjectBranchRealtime = wrapRaw(_getProjectBranchRealtime);
+export const getProjectBranchRealtimeSecret = wrapRaw(_getProjectBranchRealtimeSecret);
 export const getProjectBranchRole = wrapRaw(_getProjectBranchRole);
 export const getProjectBranchRolePassword = wrapRaw(_getProjectBranchRolePassword);
 export const getProjectBranchSchema = wrapRaw(_getProjectBranchSchema);
@@ -289,6 +310,7 @@ export const listBranchNeonAuthOauthProviders = wrapRaw(_listBranchNeonAuthOauth
 export const listBranchNeonAuthTrustedDomains = wrapRaw(_listBranchNeonAuthTrustedDomains);
 export const listCredentials = wrapRaw(_listCredentials);
 export const listNeonAuthIntegrations = wrapRaw(_listNeonAuthIntegrations);
+export const listNeonAuthOAuthClients = wrapRaw(_listNeonAuthOAuthClients);
 export const listNeonAuthOauthProviders = wrapRaw(_listNeonAuthOauthProviders);
 export const listNeonAuthRedirectUriWhitelistDomains = wrapRaw(_listNeonAuthRedirectUriWhitelistDomains);
 export const listOrganizationVpcEndpoints = wrapRaw(_listOrganizationVpcEndpoints);
@@ -329,6 +351,8 @@ export const revokeCredential = wrapRaw(_revokeCredential);
 export const revokeOrgApiKey = wrapRaw(_revokeOrgApiKey);
 export const revokePermissionFromProject = wrapRaw(_revokePermissionFromProject);
 export const rotateCredential = wrapRaw(_rotateCredential);
+export const rotateNeonAuthOAuthClientSecret = wrapRaw(_rotateNeonAuthOAuthClientSecret);
+export const rotateProjectBranchRealtimeSecret = wrapRaw(_rotateProjectBranchRealtimeSecret);
 export const sendNeonAuthEmailProviderTest = wrapRaw(_sendNeonAuthEmailProviderTest);
 export const sendNeonAuthTestEmail = wrapRaw(_sendNeonAuthTestEmail);
 export const setDefaultProjectBranch = wrapRaw(_setDefaultProjectBranch);
@@ -349,7 +373,9 @@ export const updateNeonAuthEmailAndPasswordConfig = wrapRaw(_updateNeonAuthEmail
 export const updateNeonAuthEmailProvider = wrapRaw(_updateNeonAuthEmailProvider);
 export const updateNeonAuthEmailServer = wrapRaw(_updateNeonAuthEmailServer);
 export const updateNeonAuthMagicLinkPlugin = wrapRaw(_updateNeonAuthMagicLinkPlugin);
+export const updateNeonAuthOAuthClient = wrapRaw(_updateNeonAuthOAuthClient);
 export const updateNeonAuthOauthProvider = wrapRaw(_updateNeonAuthOauthProvider);
+export const updateNeonAuthOAuthProviderPlugin = wrapRaw(_updateNeonAuthOAuthProviderPlugin);
 export const updateNeonAuthOrganizationPlugin = wrapRaw(_updateNeonAuthOrganizationPlugin);
 export const updateNeonAuthPhoneNumberPlugin = wrapRaw(_updateNeonAuthPhoneNumberPlugin);
 export const updateNeonAuthUserRole = wrapRaw(_updateNeonAuthUserRole);

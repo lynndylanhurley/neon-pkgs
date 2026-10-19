@@ -24,6 +24,8 @@ import type {
 	FunctionTriggerDef,
 	FunctionTuning,
 	PreviewInput,
+	RealtimeConfig,
+	RealtimeInput,
 	ResolvedBranchConfig,
 	ResolvedDataApiConfig,
 	ResolvedFunctionConfig,
@@ -135,6 +137,9 @@ type BucketsAutocomplete<Buckets> =
  * import { defineConfig } from "@neon/config/v1";
  *
  * export default defineConfig({
+ *   preview: {
+ *     realtime: { allowedOrigins: ["https://app.example.com"] },
+ *   },
  *   auth: true,
  *   functions: {
  *     hello: { name: "Hello", source: "./functions/hello.ts", dev: { port: 8787 } },
@@ -143,8 +148,9 @@ type BucketsAutocomplete<Buckets> =
  * });
  * ```
  *
- * The policy is split into a **static** existential set (top-level `auth` / `dataApi` /
- * `aiGateway` / `functions` / `buckets` / `triggers`, plus the deprecated `preview` aliases) and a
+ * The policy is split into a **static** existential set (`preview.realtime`, top-level `auth` /
+ * `dataApi` / `aiGateway` / `functions` / `buckets` / `triggers`, plus the deprecated
+ * aliases under `preview`) and a
  * **dynamic** per-branch `branch` closure. The static half determines which secrets exist —
  * so `NeonEnv<typeof config>` and `parseEnv` are exact — while the closure can only *tune*
  * a branch (lifecycle, compute, per-function deploy settings), never change what exists.
@@ -185,10 +191,9 @@ export function defineConfig<
 		Record<string, BucketDef> &
 		BucketsAutocomplete<Buckets>;
 	triggers?: Record<string, FunctionTriggerDef>;
-	// `& PreviewInput` restores top-level member hints (aiGateway/functions/buckets);
+	// `& PreviewInput` restores top-level member hints (realtime/aiGateway/functions/buckets);
 	// `& PreviewAutocomplete<Preview>` restores hints *inside* each function/bucket slug
 	// object (see `PreviewAutocomplete`), which the bare index signature otherwise hides.
-	/** @deprecated Use top-level `aiGateway`, `functions`, and `buckets`. */
 	preview?: Preview & PreviewInput & PreviewAutocomplete<Preview>;
 	branch?: BranchTuningFn<Preview, Functions>;
 	// Experimental (unstable) features — currently just lifecycle hooks. Static — carried
@@ -235,8 +240,15 @@ export function resolveConfig(
 	branch: BranchTarget,
 ): ResolvedBranchConfig {
 	const tuning = evaluateBranchTuning(config.branch, branch);
+	const realtimeInput = config.preview?.realtime;
 
 	const resolved: ResolvedBranchConfig = {
+		realtimePolicy:
+			realtimeInput === undefined
+				? "omitted"
+				: isRealtimeEnabled(realtimeInput)
+					? "enabled"
+					: "disabled",
 		authEnabled: isServiceEnabled(config.auth),
 		dataApiEnabled: isDataApiEnabled(config.dataApi),
 		dataApiPolicy:
@@ -246,6 +258,8 @@ export function resolveConfig(
 					? "enabled"
 					: "disabled",
 	};
+	const realtime = resolveRealtime(realtimeInput);
+	if (realtime) resolved.realtime = realtime;
 	const dataApi = resolveDataApi(config.dataApi);
 	if (dataApi) resolved.dataApi = dataApi;
 	if (tuning.parent !== undefined) resolved.parent = tuning.parent;
@@ -303,6 +317,25 @@ function isServiceEnabled(toggle: ServiceToggleInput | undefined): boolean {
 	if (toggle === undefined) return false;
 	if (typeof toggle === "boolean") return toggle;
 	return toggle.enabled !== false;
+}
+
+/** Whether a {@link RealtimeInput} is enabled (present object or `true`). */
+function isRealtimeEnabled(input: RealtimeInput | undefined): boolean {
+	if (input === undefined) return false;
+	if (typeof input === "boolean") return input;
+	return true;
+}
+
+/** Copy the options from an object-form {@link RealtimeInput}. */
+function resolveRealtime(
+	input: RealtimeInput | undefined,
+): RealtimeConfig | undefined {
+	if (typeof input !== "object") return undefined;
+	return {
+		...(input.allowedOrigins !== undefined
+			? { allowedOrigins: [...input.allowedOrigins] }
+			: {}),
+	};
 }
 
 /** Whether a {@link DataApiInput} is enabled (present object/`true` unless `enabled: false`). */

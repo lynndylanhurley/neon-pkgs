@@ -332,6 +332,9 @@ describe("Realtime v1 JSON codec", () => {
 				}),
 			),
 		).toThrow(ProtocolError);
+	});
+
+	it("accepts server messages larger than the former 1 MiB limit", () => {
 		expect(() =>
 			decodeServerMessage(
 				JSON.stringify({
@@ -340,7 +343,7 @@ describe("Realtime v1 JSON codec", () => {
 					message: "x".repeat(1024 * 1024),
 				}),
 			),
-		).toThrow(ProtocolError);
+		).not.toThrow();
 	});
 
 	it("keeps the production validator generated from the authoritative schema", () => {
@@ -350,14 +353,6 @@ describe("Realtime v1 JSON codec", () => {
 		expect(() =>
 			execFileSync(process.execPath, [generator, "--check"]),
 		).not.toThrow();
-	});
-
-	it("reports the exact wire size for downstream staging accounting", () => {
-		const text = JSON.stringify({ type: "pong", token: "é" });
-		expect(decodeServerFrame(text)).toMatchObject({
-			message: { type: "pong", token: "é" },
-			byteLength: new TextEncoder().encode(text).byteLength,
-		});
 	});
 
 	it("serializes every client command with wire field names", () => {

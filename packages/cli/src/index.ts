@@ -13,6 +13,7 @@ import {
 	isNeonApiError,
 	messageFromBody,
 	type NeonApiClient,
+	UnreadableResponseError,
 } from "./api.js";
 import { AuthRefreshError, defaultClientID } from "./auth.js";
 import { getAuthContext } from "./auth_context.js";
@@ -40,6 +41,11 @@ import { recoverFromSSO } from "./sso_recovery.js";
 import { notifyIfUpdateAvailable } from "./update_notifier.js";
 import { getCliName } from "./utils/cli_name.js";
 import { fillInArgs, resolveApiKeyFromEnv } from "./utils/middlewares.js";
+import {
+	collapseRepeatedFlags,
+	declaredOptions,
+} from "./utils/repeated_flags.js";
+import { stagingFeaturesEnabledForArgv } from "./utils/staging.js";
 
 const NO_SUBCOMMANDS_VERBS = [
 	// `api <path>` has a handler but no subcommands (like `status`), so the
@@ -100,6 +106,10 @@ builder = builder
 	.usage("$0 <command> [options]")
 	.parserConfiguration({
 		"populate--": true,
+		"sort-commands": true,
+		// yargs otherwise rewrites numeric-looking tokens after `--` into numbers (`1e3` becomes
+		// 1000) before they reach psql. Declared positionals keep their own `type` either way.
+		"parse-positional-numbers": false,
 	})
 	.help()
 	.option("output", {
@@ -188,6 +198,10 @@ builder = builder
 			default: true,
 		},
 	})
+	// Before `resolveApiKeyFromEnv`, which replaces a repeated `--api-key` with NEON_API_KEY.
+	.middleware((args) => {
+		collapseRepeatedFlags(args, declaredOptions(builder));
+	}, true)
 	.middleware((args) => {
 		fillInArgs(args);
 	}, true)
@@ -220,7 +234,11 @@ builder = builder
 	.middleware(enrichFromContext as any)
 	.middleware(analyticsMiddleware)
 	// @types/yargs declares builders synchronous; yargs 17 awaits a builder's promise.
-	.command(lazyCommands as any)
+	.command(
+		lazyCommands({
+			staging: stagingFeaturesEnabledForArgv(hideBin(process.argv)),
+		}) as any,
+	)
 	.strictCommands()
 	.version(pkg.version)
 	.group("version", "Global options:")
@@ -318,6 +336,8 @@ async function handleError(
 			const serverMessage = messageFromBody(err.data);
 			if (serverMessage) {
 				log.error(serverMessage);
+			} else if (err instanceof UnreadableResponseError) {
+				log.error(err.message);
 			} else {
 				// A response without a message (e.g. a 404 for an unknown route) would
 				// otherwise exit 1 with nothing on stderr.

@@ -1,9 +1,11 @@
-import { describe, expect, test } from "vitest";
+import { createServer } from "node:http";
+import { describe, expect, test, vi } from "vitest";
 import { ErrorCode, PlatformError } from "./errors.js";
 import {
 	buildFunctionDeployForm,
 	collectCursorPages,
 	createNeonAuthRestInput,
+	createRealNeonApi,
 	customDomainsUnavailableError,
 	isPreviewFeatureUnavailable,
 	previewUnavailableError,
@@ -12,6 +14,112 @@ import {
 } from "./neon-api-real.js";
 
 const FAST_CONFIG = { maxAttempts: 5, initialDelayMs: 1, maxDelayMs: 4 };
+
+describe("Realtime adapter", () => {
+	test("maps the generated GET/POST/DELETE operations", async () => {
+		const requests: Array<{
+			method: string;
+			url: string;
+			body: unknown;
+		}> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const request =
+					input instanceof Request ? input : new Request(input, init);
+				const text = await request.clone().text();
+				requests.push({
+					method: request.method,
+					url: request.url,
+					body: text === "" ? undefined : JSON.parse(text),
+				});
+				if (request.method === "GET") {
+					if (request.url.endsWith("/realtime/secret")) {
+						return new Response(
+							JSON.stringify({
+								secret: "nrt_live_1_test-secret",
+								pending: false,
+							}),
+							{
+								status: 200,
+								headers: {
+									"Content-Type": "application/json",
+								},
+							},
+						);
+					}
+					return new Response(
+						JSON.stringify({
+							enabled: true,
+							pending: false,
+							invocation_url:
+								"https://br-main.realtime.example.com",
+							revision: 3,
+							allowed_origins: ["https://app.example.com"],
+						}),
+						{
+							status: 200,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				}
+				return new Response(null, { status: 202 });
+			}),
+		);
+		try {
+			const api = createRealNeonApi({
+				apiKey: "test-key",
+				baseUrl: "https://api.example.test/api/v2",
+			});
+			await expect(
+				api.getProjectBranchRealtime?.("proj-one", "br-main"),
+			).resolves.toEqual({
+				enabled: true,
+				pending: false,
+				invocationUrl: "https://br-main.realtime.example.com",
+				revision: 3,
+				allowedOrigins: ["https://app.example.com"],
+			});
+			await expect(
+				api.getProjectBranchRealtimeSecret?.("proj-one", "br-main"),
+			).resolves.toEqual({
+				secret: "nrt_live_1_test-secret",
+				pending: false,
+			});
+			await api.enableProjectBranchRealtime?.("proj-one", "br-main", {
+				allowedOrigins: ["https://app.example.com"],
+			});
+			await api.disableProjectBranchRealtime?.("proj-one", "br-main");
+
+			expect(requests).toEqual([
+				{
+					method: "GET",
+					url: "https://api.example.test/api/v2/projects/proj-one/branches/br-main/realtime",
+					body: undefined,
+				},
+				{
+					method: "GET",
+					url: "https://api.example.test/api/v2/projects/proj-one/branches/br-main/realtime/secret",
+					body: undefined,
+				},
+				{
+					method: "POST",
+					url: "https://api.example.test/api/v2/projects/proj-one/branches/br-main/realtime",
+					body: {
+						allowed_origins: ["https://app.example.com"],
+					},
+				},
+				{
+					method: "DELETE",
+					url: "https://api.example.test/api/v2/projects/proj-one/branches/br-main/realtime",
+					body: undefined,
+				},
+			]);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
 
 describe("retryOnLocked", () => {
 	test("returns the value when the call succeeds on the first try", async () => {
@@ -429,5 +537,115 @@ describe("collectCursorPages", () => {
 		});
 		expect(seen).toEqual([undefined, "two"]);
 		expect(items).toEqual([1, 2]);
+	});
+});
+
+describe("enableNeonAuth", () => {
+	const AUTH_PATH = "/projects/proj-1/branches/br-1/auth";
+	const API_MESSAGE =
+		"The `neon_auth` schema already exists and cannot be automatically provisioned. Please drop the existing `neon_auth` schema before provisioning Neon Auth.";
+
+	const withAuthServer = async (
+		get: { status: number; body: unknown },
+		run: (
+			api: ReturnType<typeof createRealNeonApi>,
+			requests: string[],
+		) => Promise<void>,
+	) => {
+		const requests: string[] = [];
+		const server = createServer((req, res) => {
+			const path = new URL(req.url ?? "/", "http://localhost").pathname;
+			requests.push(`${req.method} ${path}`);
+			req.resume();
+			req.on("end", () => {
+				res.setHeader("content-type", "application/json");
+				if (path === AUTH_PATH && req.method === "POST") {
+					res.statusCode = 409;
+					res.end(
+						JSON.stringify({
+							request_id: "req-1",
+							code: "",
+							message: API_MESSAGE,
+						}),
+					);
+				} else if (path === AUTH_PATH && req.method === "GET") {
+					res.statusCode = get.status;
+					res.end(JSON.stringify(get.body));
+				} else {
+					res.statusCode = 500;
+					res.end(
+						JSON.stringify({
+							message: `unexpected ${req.method} ${path}`,
+						}),
+					);
+				}
+			});
+		});
+		try {
+			await new Promise<void>((resolve) => server.listen(0, resolve));
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				throw new Error("test server has no port");
+			}
+			await run(
+				createRealNeonApi({
+					apiKey: "test-key",
+					baseUrl: `http://localhost:${address.port}`,
+				}),
+				requests,
+			);
+		} finally {
+			server.closeAllConnections();
+			await new Promise((resolve) => server.close(resolve));
+		}
+	};
+
+	test("returns the existing integration when the branch already has Neon Auth", async () => {
+		await withAuthServer(
+			{
+				status: 200,
+				body: {
+					auth_provider_project_id: "auth-1",
+					jwks_url: "https://auth.example/jwks",
+					base_url: "https://auth.example",
+				},
+			},
+			async (api, requests) => {
+				await expect(
+					api.enableNeonAuth("proj-1", "br-1"),
+				).resolves.toEqual({
+					projectId: "auth-1",
+					jwksUrl: "https://auth.example/jwks",
+					baseUrl: "https://auth.example",
+				});
+				expect(requests).toEqual([
+					`POST ${AUTH_PATH}`,
+					`GET ${AUTH_PATH}`,
+				]);
+			},
+		);
+	});
+
+	test("reports the API's reason, not a name collision, when a branch without Neon Auth cannot be provisioned", async () => {
+		await withAuthServer(
+			{
+				status: 404,
+				body: { message: "Neon Auth is not enabled for this branch" },
+			},
+			async (api, requests) => {
+				const failure = api.enableNeonAuth("proj-1", "br-1");
+				await expect(failure).rejects.toMatchObject({
+					code: ErrorCode.Conflict,
+				});
+				await expect(failure).rejects.toThrow(
+					`enableNeonAuth(proj-1/br-1) failed: Neon API said: "${API_MESSAGE}" (request id req-1).`,
+				);
+				await expect(failure).rejects.not.toThrow("name collision");
+				expect(requests).toEqual([
+					`POST ${AUTH_PATH}`,
+					`GET ${AUTH_PATH}`,
+				]);
+			},
+		);
 	});
 });

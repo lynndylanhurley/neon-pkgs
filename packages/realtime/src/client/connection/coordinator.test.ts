@@ -15,8 +15,12 @@ type FakeWebSocketListener =
 	| ((event: { readonly data: unknown }) => void);
 
 class FakeWebSocket implements WebSocketLike {
+	static readonly CONNECTING = 0;
+	static readonly OPEN = 1;
+	static readonly CLOSING = 2;
+	static readonly CLOSED = 3;
 	static instances: FakeWebSocket[] = [];
-	readyState = 0;
+	readyState = FakeWebSocket.CONNECTING;
 	readonly sent: Record<string, unknown>[] = [];
 	readonly protocols: string | string[];
 	onSend?: (message: Record<string, unknown>) => void;
@@ -49,14 +53,22 @@ class FakeWebSocket implements WebSocketLike {
 	}
 
 	close(): void {
-		if (this.readyState >= 2) return;
+		if (this.readyState >= FakeWebSocket.CLOSING) return;
 		this.onClose?.();
-		this.readyState = 3;
-		if (this.emitCloseOnClose) this.emit("close", {});
+		this.readyState = FakeWebSocket.CLOSING;
+		if (this.emitCloseOnClose) {
+			this.readyState = FakeWebSocket.CLOSED;
+			this.emit("close", {});
+		}
+	}
+
+	terminate(): void {
+		this.readyState = FakeWebSocket.CLOSED;
+		this.emit("close", {});
 	}
 
 	open(): void {
-		this.readyState = 1;
+		this.readyState = FakeWebSocket.OPEN;
 		this.emit("open", {});
 	}
 
@@ -65,7 +77,7 @@ class FakeWebSocket implements WebSocketLike {
 	}
 
 	disconnect(): void {
-		this.readyState = 3;
+		this.readyState = FakeWebSocket.CLOSED;
 		this.emit("close", {});
 	}
 
@@ -99,17 +111,17 @@ describe("ConnectionCoordinator", () => {
 		first.error();
 
 		expect(close).toHaveBeenCalledTimes(1);
-		expect(callbacks.disconnected).toHaveBeenCalledTimes(1);
+		expect(callbacks.connecting).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(FakeWebSocket.instances).toHaveLength(2);
 		const second = admit();
 		// A late close/error from the retired socket cannot retire its replacement.
 		first.disconnect();
 		first.error();
-		expect(callbacks.disconnected).toHaveBeenCalledTimes(1);
+		expect(callbacks.connecting).toHaveBeenCalledTimes(1);
 		expect(callbacks.admitted).toHaveBeenCalledTimes(1);
 		expect(callbacks.failed).not.toHaveBeenCalled();
-		expect(second.readyState).toBe(1);
+		expect(second.readyState).toBe(FakeWebSocket.OPEN);
 		coordinator.close();
 	});
 
@@ -130,7 +142,7 @@ describe("ConnectionCoordinator", () => {
 		first.error();
 
 		expect(close).toHaveBeenCalledTimes(1);
-		expect(callbacks.disconnected).toHaveBeenCalledTimes(1);
+		expect(callbacks.connecting).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(FakeWebSocket.instances).toHaveLength(2);
 		const second = admit();
@@ -145,7 +157,7 @@ describe("ConnectionCoordinator", () => {
 		);
 		expect(callbacks.failed).not.toHaveBeenCalled();
 		coordinator.close();
-		expect(second.readyState).toBe(3);
+		expect(second.readyState).toBe(FakeWebSocket.CLOSED);
 	});
 
 	it.each([
@@ -164,10 +176,29 @@ describe("ConnectionCoordinator", () => {
 		coordinator.close();
 
 		expect(close).toHaveBeenCalledTimes(1);
-		expect(socket.readyState).toBe(3);
+		expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(FakeWebSocket.instances).toHaveLength(1);
 		expect(callbacks.failed).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("force-closes a socket whose peer does not finish the close handshake", async () => {
+		vi.useFakeTimers();
+		const coordinator = createCoordinator();
+		coordinator.subscribe({ capability: "token" }, target());
+		const socket = defined(FakeWebSocket.instances[0]);
+		socket.emitCloseOnClose = false;
+		const terminate = vi.spyOn(socket, "terminate");
+
+		coordinator.close();
+
+		expect(socket.readyState).toBe(FakeWebSocket.CLOSING);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(terminate).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		expect(terminate).toHaveBeenCalledOnce();
+		expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
@@ -298,7 +329,7 @@ describe("ConnectionCoordinator", () => {
 		const first = admit();
 		const renewal = handle.renew({ capability: "newest" });
 		first.disconnect();
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(1);
 		const second = defined(FakeWebSocket.instances[1]);
 		second.open();
@@ -411,10 +442,12 @@ describe("ConnectionCoordinator", () => {
 			code: "authorization_expired",
 			message: "expired",
 		});
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.queryUnavailable).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).not.toHaveBeenCalled();
 		expect(callbacks.failed).not.toHaveBeenCalled();
 
 		const renewal = handle.renew({ capability: "replacement" });
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 		expect(socket.sent.at(-1)).toEqual({
 			type: "subscribe",
 			request_id: "2",
@@ -461,7 +494,8 @@ describe("ConnectionCoordinator", () => {
 			message: "expired",
 		});
 
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.queryUnavailable).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 		expect(socket.sent.at(-1)).toEqual({
 			type: "subscribe",
 			request_id: "2",
@@ -557,6 +591,33 @@ describe("ConnectionCoordinator", () => {
 		expect(events).toEqual(["connection_failed"]);
 	});
 
+	it("fails a subscription created after a terminal connection failure", () => {
+		const coordinator = createCoordinator();
+		const first = target();
+		coordinator.subscribe({ capability: "one" }, first);
+		const socket = defined(FakeWebSocket.instances[0]);
+		socket.open();
+		socket.receive({ type: "ready" });
+		socket.receive({
+			type: "connection_error",
+			code: "protocol_error",
+			message: "connection cannot recover",
+		});
+		expect(first.failed).toHaveBeenCalledOnce();
+
+		const second = target();
+		coordinator.subscribe({ capability: "two" }, second);
+
+		expect(second.failed).toHaveBeenCalledWith(
+			expect.objectContaining({
+				code: "protocol_error",
+				message: "connection cannot recover",
+				retryable: false,
+			}),
+		);
+		expect(FakeWebSocket.instances).toHaveLength(1);
+	});
+
 	it("probes an idle ready connection and times it out without inbound activity", async () => {
 		vi.useFakeTimers();
 		const callbacks = target();
@@ -579,7 +640,7 @@ describe("ConnectionCoordinator", () => {
 		expect(socket.sent.at(-1)).toEqual({ type: "ping", token: "c1" });
 
 		await vi.advanceTimersByTimeAsync(10);
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 	});
 
 	it("handles an inbound response delivered synchronously from ping", async () => {
@@ -601,12 +662,12 @@ describe("ConnectionCoordinator", () => {
 		expect(
 			socket.sent.filter((message) => message.type === "ping"),
 		).toHaveLength(1);
-		expect(socket.readyState).toBe(1);
+		expect(socket.readyState).toBe(FakeWebSocket.OPEN);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(
 			socket.sent.filter((message) => message.type === "ping"),
 		).toHaveLength(2);
-		expect(socket.readyState).toBe(1);
+		expect(socket.readyState).toBe(FakeWebSocket.OPEN);
 	});
 
 	it("keeps increasing backoff until a reconnected socket is stable", async () => {
@@ -862,7 +923,7 @@ describe("subscription load-shedding recovery", () => {
 			shed(socket);
 		}
 		expect(callbacks.failed).not.toHaveBeenCalled();
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(49);
 		expect(socket.sent).toHaveLength(2);
 		await vi.advanceTimersByTimeAsync(1);
@@ -874,7 +935,7 @@ describe("subscription load-shedding recovery", () => {
 		accepted(socket, "3", "43");
 		baseline(socket, "43");
 		expect(callbacks.reconciliation.caughtUp).toHaveBeenCalledOnce();
-		expect(healthy.disconnected).not.toHaveBeenCalled();
+		expect(healthy.connecting).not.toHaveBeenCalled();
 		expect(healthy.failed).not.toHaveBeenCalled();
 		expect(FakeWebSocket.instances).toHaveLength(1);
 		coordinator.close();
@@ -1003,7 +1064,7 @@ describe("subscription load-shedding recovery", () => {
 		baseline(socket, "42");
 		expect(healthy.reconciliation.caughtUp).toHaveBeenCalledOnce();
 		expect(healthy.failed).not.toHaveBeenCalled();
-		expect(socket.readyState).toBe(1);
+		expect(socket.readyState).toBe(FakeWebSocket.OPEN);
 		coordinator.close();
 		expect(vi.getTimerCount()).toBe(0);
 	});
@@ -1125,7 +1186,7 @@ describe("subscription load-shedding recovery", () => {
 			overloaded(socket, type, "41", 300);
 		}
 		expect(callbacks.failed).not.toHaveBeenCalled();
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(299);
 		expect(socket.sent).toHaveLength(2);
 		await vi.advanceTimersByTimeAsync(1);
@@ -1137,7 +1198,7 @@ describe("subscription load-shedding recovery", () => {
 		accepted(socket, "3", "43");
 		baseline(socket, "43");
 		expect(callbacks.reconciliation.caughtUp).toHaveBeenCalledOnce();
-		expect(healthy.disconnected).not.toHaveBeenCalled();
+		expect(healthy.connecting).not.toHaveBeenCalled();
 		expect(healthy.failed).not.toHaveBeenCalled();
 		expect(FakeWebSocket.instances).toHaveLength(1);
 		coordinator.close();
@@ -1252,7 +1313,7 @@ describe("subscription load-shedding recovery", () => {
 			message: "resource exhausted",
 		});
 		expect(callbacks.failed).not.toHaveBeenCalled();
-		expect(callbacks.disconnected).toHaveBeenCalledOnce();
+		expect(callbacks.connecting).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(49);
 		expect(socket.sent).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(1);
@@ -1320,7 +1381,8 @@ function admit(): FakeWebSocket {
 
 function target(): ConnectionCallbacks & {
 	admitted: ReturnType<typeof vi.fn>;
-	disconnected: ReturnType<typeof vi.fn>;
+	connecting: ReturnType<typeof vi.fn>;
+	queryUnavailable: ReturnType<typeof vi.fn>;
 	failed: ReturnType<typeof vi.fn>;
 } {
 	const reconciliation: ReconciliationTarget = {
@@ -1338,7 +1400,8 @@ function target(): ConnectionCallbacks & {
 	return {
 		reconciliation,
 		admitted: vi.fn(),
-		disconnected: vi.fn(),
+		connecting: vi.fn(),
+		queryUnavailable: vi.fn(),
 		failed: vi.fn(),
 	};
 }

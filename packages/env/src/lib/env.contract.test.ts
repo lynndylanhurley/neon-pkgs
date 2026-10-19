@@ -43,6 +43,12 @@ const INPUT_ENV_KEYS = [
 	{ key: "NEON_AUTH_BASE_URL", namespace: "auth", prop: "baseUrl" },
 	{ key: "NEON_AUTH_JWKS_URL", namespace: "auth", prop: "jwksUrl" },
 	{ key: "NEON_DATA_API_URL", namespace: "dataApi", prop: "url" },
+	{ key: "NEON_REALTIME_URL", namespace: "realtime", prop: "url" },
+	{
+		key: "NEON_REALTIME_SECRET",
+		namespace: "realtime",
+		prop: "secret",
+	},
 	{ key: "AWS_ACCESS_KEY_ID", namespace: "storage", prop: "accessKeyId" },
 	{
 		key: "AWS_SECRET_ACCESS_KEY",
@@ -80,7 +86,11 @@ const OUTPUT_ONLY_ENV_VARS: ReadonlySet<string> = new Set(["NEON_BRANCH"]);
 const allNamespacesConfig = defineConfig({
 	auth: true,
 	dataApi: true,
-	preview: { buckets: { uploads: {} }, aiGateway: true },
+	preview: {
+		realtime: true,
+		buckets: { uploads: {} },
+		aiGateway: true,
+	},
 });
 
 describe("NEON_ENV_VAR_KEYS (public OS env-var names)", () => {
@@ -104,6 +114,10 @@ describe("NEON_ENV_VAR_KEYS (public OS env-var names)", () => {
 			  "postgres": {
 			    "databaseUrl": "DATABASE_URL",
 			    "databaseUrlUnpooled": "DATABASE_URL_UNPOOLED",
+			  },
+			  "realtime": {
+			    "secret": "NEON_REALTIME_SECRET",
+			    "url": "NEON_REALTIME_URL",
 			  },
 			  "storage": {
 			    "accessKeyId": "AWS_ACCESS_KEY_ID",
@@ -164,6 +178,7 @@ describe("toEntries → parseEnv round-trip (cross-process transport)", () => {
 			auth: true,
 			dataApi: true,
 			preview: {
+				realtime: true,
 				buckets: { uploads: {} },
 				aiGateway: true,
 				functions: { hello: { name: "Hello", source: "./hello.ts" } },
@@ -180,6 +195,10 @@ describe("toEntries → parseEnv round-trip (cross-process transport)", () => {
 				jwksUrl: "https://auth.example.com/.well-known/jwks.json",
 			},
 			dataApi: { url: "https://data.example.com" },
+			realtime: {
+				url: "wss://realtime.example.com/v1",
+				secret: "nrt_live_1_contract-test",
+			},
 			storage: {
 				accessKeyId: "nak_live_abc",
 				secretAccessKey: "s".repeat(64),

@@ -296,6 +296,27 @@ describe("local function URLs", () => {
 		expect(units[0]?.childEnv.DATABASE_URL).toBe("postgres://prod");
 	});
 
+	it("passes every loaded dotenv key to the child, declared or not", async () => {
+		vi.stubEnv("FROM_DOTENV", "loaded");
+		const [unit] = await planFunctionsToUnits(
+			[
+				{
+					slug: "hello",
+					name: "Hello",
+					source: "/fns/hello.ts",
+					port: 8787,
+					env: { DECLARED: "from-neon-ts" },
+				},
+			],
+			{},
+			8787,
+		);
+
+		expect(unit?.childEnv.DECLARED).toBe("from-neon-ts");
+		expect(unit?.childEnv.FROM_DOTENV).toBe("loaded");
+		vi.unstubAllEnvs();
+	});
+
 	it("keeps a search-mode port and configKey when replanned with keepPorts", async () => {
 		const hello = {
 			slug: "hello",
@@ -419,6 +440,16 @@ describe("local function URLs", () => {
 			undefined,
 		);
 		expect(overlay).toEqual({});
+		expect(port.mode).toBe("search");
+	});
+
+	it("picks the port from the shell, not from a PORT the dotenv files loaded", async () => {
+		vi.stubEnv("PORT", "4321 # from .env.local");
+		const { port } = await sourceFunctionUrlOverlay(
+			undefined,
+			undefined,
+			{},
+		);
 		expect(port.mode).toBe("search");
 	});
 

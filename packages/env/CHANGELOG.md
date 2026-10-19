@@ -1,5 +1,44 @@
 # @neondatabase/env
 
+## 1.6.3
+
+### Patch Changes
+
+- 8ac70da: Raise the `zod` dependency range to `^4.5.4`.
+- Updated dependencies [8ac70da]
+  - @neon/config@1.9.2
+
+## 1.6.2
+
+### Patch Changes
+
+- 5b0f9a0: `parseEnv(config)` and `parseEnv(config, "<slug>")` no longer throw inside a deployed Neon Function when `NEON_FUNCTION_<SLUG>_BASE_URL` is unset, which the runtime does not inject yet. `env.functions` is now optional on those calls. Pass the key, as in `parseEnv(config, ["NEON_FUNCTION_HELLO_BASE_URL"])`, to require it.
+
+## 1.6.1
+
+### Patch Changes
+
+- @neon/config@1.9.1
+
+## 1.6.0
+
+### Minor Changes
+
+- 5e276fd: Expose the Realtime WebSocket URL and server-only secret through `@neon/env` and `neon env pull`. Config-aware pulls wait for asynchronous Realtime provisioning before returning `NEON_REALTIME_URL` and `NEON_REALTIME_SECRET`; applications derive the database name from `DATABASE_URL`.
+
+### Patch Changes
+
+- Updated dependencies [33325b3]
+- Updated dependencies [5e276fd]
+  - @neon/config@1.9.0
+
+## 1.5.4
+
+### Patch Changes
+
+- Updated dependencies [bb25e72]
+  - @neon/config@1.8.7
+
 ## 1.5.3
 
 ### Patch Changes

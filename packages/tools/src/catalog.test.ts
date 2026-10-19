@@ -530,6 +530,69 @@ describe("special mappings", () => {
 		);
 	});
 
+	test("realtime.enable sends allowed_origins as the body and waits for pending to clear", async () => {
+		const requests: Request[] = [];
+		const tools = createNeonTools({
+			apiKey: "test-key",
+			tools: ["realtime.enable"] as const,
+			wait: { pollIntervalMs: 1 },
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				requests.push(request);
+				if (request.method !== "GET") {
+					return new Response(null, { status: 202 });
+				}
+				return jsonResponse({
+					enabled: true,
+					pending: requests.length < 3,
+				});
+			},
+		});
+
+		expect(tools["realtime.enable"].requiresApproval).toBe(true);
+		await tools["realtime.enable"].execute({
+			project_id: "project-id",
+			branch_id: "branch-id",
+			allowed_origins: ["https://app.example.com"],
+		});
+
+		expect(requests[0].method).toBe("POST");
+		expect(requests[0].url).toMatch(
+			/\/projects\/project-id\/branches\/branch-id\/realtime$/,
+		);
+		expect(await requests[0].json()).toEqual({
+			allowed_origins: ["https://app.example.com"],
+		});
+		expect(requests.map((r) => r.method)).toEqual(["POST", "GET", "GET"]);
+	});
+
+	test("realtime.secret requires approval and returns the branch secret", async () => {
+		const requests: Request[] = [];
+		const tools = createNeonTools({
+			apiKey: "test-key",
+			tools: ["realtime.secret"] as const,
+			fetch: async (input, init) => {
+				requests.push(new Request(input, init));
+				return jsonResponse({ secret: "rt_secret", pending: false });
+			},
+		});
+
+		expect(tools["realtime.secret"].requiresApproval).toBe(true);
+		expect(tools["realtime.secret"].annotations.readOnlyHint).toBe(true);
+		const result = await tools["realtime.secret"].execute({
+			project_id: "project-id",
+			branch_id: "branch-id",
+		});
+
+		expect(result).toEqual({
+			data: { secret: "rt_secret", pending: false },
+		});
+		expect(requests[0].method).toBe("GET");
+		expect(requests[0].url).toMatch(
+			/\/projects\/project-id\/branches\/branch-id\/realtime\/secret$/,
+		);
+	});
+
 	test("branches.delete has no hard_delete input", () => {
 		const tool = createNeonTool("branches.delete", { apiKey: "test-key" });
 		const schema = z.toJSONSchema(tool.inputSchema);

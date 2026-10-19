@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ResolvedNeonAuthLogging } from "../logger";
 import * as proxyHandler from "../proxy/handler";
 import * as oauth from "./oauth";
@@ -616,5 +616,76 @@ describe("processAuthMiddleware", () => {
 
 			expect(result.action).toBe("redirect_login");
 		});
+	});
+});
+
+describe("processAuthMiddleware client-info header", () => {
+	const originalNextRuntime = process.env.NEXT_RUNTIME;
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.resetModules();
+		if (originalNextRuntime === undefined) delete process.env.NEXT_RUNTIME;
+		else process.env.NEXT_RUNTIME = originalNextRuntime;
+	});
+
+	// The injector caches client info at module init, so the env must be set
+	// before the module graph is (re)loaded.
+	async function captureSessionLookup(headers: Record<string, string>) {
+		process.env.NEXT_RUNTIME = "nodejs";
+		vi.resetModules();
+		const { processAuthMiddleware: run } = await import("./processor");
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () =>
+				Response.json({ session: null, user: null }),
+			);
+
+		await run(
+			createTestConfig({
+				request: new Request("https://app.com/dashboard", {
+					method: "POST",
+					headers: {
+						Cookie: "__Secure-neon-auth.session_token=token-value",
+						"Content-Type": "application/x-www-form-urlencoded",
+						...headers,
+					},
+					body: "a=b",
+				}),
+			}),
+		);
+
+		// The session-cache miss path issues its own minting fetch first, so
+		// pick out the proxied lookup by the header only the proxy sets.
+		const proxied = fetchSpy.mock.calls.filter(
+			([, init]) =>
+				new Headers(init?.headers).get("x-neon-auth-middleware") ===
+				"true",
+		);
+		expect(proxied).toHaveLength(1);
+		const [url, init] = proxied[0];
+		expect(String(url)).toBe(`${BASE_URL}/get-session`);
+		expect(init?.method).toBe("GET");
+		return new Headers(init?.headers);
+	}
+
+	test("stamps X-Neon-Client-Info on the get-session lookup", async () => {
+		const upstreamHeaders = await captureSessionLookup({});
+
+		const info = JSON.parse(
+			upstreamHeaders.get("X-Neon-Client-Info") ?? "null",
+		);
+		expect(info.sdk).toBe("@neon/auth");
+		expect(info.framework).toBe("next");
+		expect(upstreamHeaders.has("content-type")).toBe(false);
+	});
+
+	test("preserves an inbound X-Neon-Client-Info value", async () => {
+		const inbound = JSON.stringify({ sdk: "custom", version: "9.9.9" });
+		const upstreamHeaders = await captureSessionLookup({
+			"X-Neon-Client-Info": inbound,
+		});
+
+		expect(upstreamHeaders.get("X-Neon-Client-Info")).toBe(inbound);
 	});
 });

@@ -193,6 +193,44 @@ It imports the harness **by subpath** (`@neon/e2e-harness/projects`, `/api`, `/e
 barrel: the barrel re-exports the `e2eTest` fixture, which imports `vitest`, and Vitest runs
 `globalSetup` outside a worker where that throws.
 
+##### The Neon Auth suite (`@neon/auth`)
+
+`pnpm --filter @neon/auth test:e2e` is a separate live suite, run by its own workflow for the
+same reason the gateway suite's is: auth provisioning belongs to changes that can affect it,
+not to every pull request.
+
+| | |
+| --- | --- |
+| **Workflow** | `.github/workflows/e2e-auth.yml` — path-filtered to `packages/auth/**` and `tests/e2e-harness/**`, plus pushes to `main` and `workflow_dispatch` |
+| **Credentials** | The same `NEON_TEST_API_KEY`. Nothing auth-specific is stored |
+
+`e2e/global-setup.ts` provisions everything from that key: a throwaway project, Neon Auth
+enabled on its default branch (`better_auth`), and email verification turned off — the only
+way a headless signup can succeed — then publishes `NEON_AUTH_BASE_URL` and
+`NEON_AUTH_JWKS_URL` to the test files and deletes the project afterwards. Those two
+variables are run-internal, set by the provisioning itself, which is why they appear in
+neither the env var table nor any `.env.example`.
+
+The suite is deliberately small and high-signal, because a headless run can only exercise
+what needs no browser and no outside party:
+
+- **`endpoints`** — `src/server/endpoints.ts` declares three paths that exist nowhere in
+  better-auth 1.6.23 (`revoke-all-sessions`, `jwt`, `email-otp/passcode`; better-auth serves
+  `revoke-other-sessions`, `/jwks`, `email-otp/reset-password`). Whether Neon Auth aliases
+  them is a fact only the live service knows, so each probe asserts the declared path is not
+  a 404 and the failure message names better-auth's spelling.
+- **`session`** — a real signup → sign-in → `getSession` → `getJWTToken` → sign-out
+  round-trip through `SupabaseAuthAdapter`, asserting the wire contract a mock cannot
+  fabricate: the raw `Set-Cookie` names and attributes, the `set-auth-jwt` header the JWT
+  rides on, and that the JWT's `kid` resolves against the JWKS the provisioning reported.
+  Node's fetch has no cookie jar, so `e2e/helpers.ts` installs one as `globalThis.fetch` —
+  the adapter's requests ride the global fetch, and the jar's recording is the only way a
+  test sees the raw `Set-Cookie`.
+
+Out of scope on purpose: OAuth, magic link, email-OTP delivery, phone/SMS, cross-tab
+`BroadcastChannel`, and the iframe popup — all of them need a browser or an outside party a
+headless run cannot provide.
+
 ##### The shared harness (`tests/e2e-harness`)
 
 `@neon/e2e-harness` is a **private, never-published** workspace package holding the
@@ -426,13 +464,40 @@ so "reach into an internal" is not a thing it can do.
 - `-y` / `--yes` / `--default` is the non-interactive path. If it cannot decide, the error names the flag (and values) to pass. `neon link` with no project: pass `--project-id <id>`. `neon skills -y` with no agent: pass `--agent <name>`, run from a supported agent, or omit `-y` in a terminal to pick.
 - Every command exposes flags for every interactive question so it can run with no TTY (`--agent`, `--project-id`, `--skill`, `--global`, `--oauth`, `--project`, `--no-agent-setup`, …). Coding-agent targeting is `--agent <name>` on `skills`, `plugins`, `mcp`, `init`, and `bootstrap`; init Recommended detection is global config, project folders, and the host CLI. `init` may install the plugin and skills/MCP in one run; `bootstrap` still refuses that mix. `link` has no `--agent`.
 
+#### Staging-only features
+
+A CLI feature can ship before its API reaches production. Until then it is **staging-only**: it is exposed only when the host requests go to (`--api-host` or `--apiHost`, else `NEON_API_HOST`) has the staging hostname `console-stage.neon.build` (`https://console-stage.neon.build/api/v2`). With production or no host set, it is left out of `--help`, anything that asks for it fails with a "coming soon" error, and reads the CLI makes on its own (such as `neon env pull` without a `neon.ts`) skip it. No feature is gated today. Neon Realtime was gated until its API reached production.
+
+Run the CLI against staging with a staging API key:
+
+```bash
+NEON_API_HOST=https://console-stage.neon.build/api/v2 NEON_API_KEY=<staging key> neon <command> --help
+```
+
+**A production HTTP 500 from an endpoint that works on staging most likely means the feature is staging-only for now** and needs this gate. Production answered the unreleased Realtime route `GET /projects/{id}/branches/{branch}/realtime` with HTTP 500 rather than 404, so on neon 8.4.0 `neon env pull` without a `neon.ts` failed for every project until the read was gated.
+
+**Always ask the developer to confirm that a feature should be staging-only** before adding or removing a gate. A 500 is a reason to ask, not a confirmation.
+
+The helpers live in `packages/cli/src/utils/staging.ts`:
+
+| Need | Use |
+| --- | --- |
+| Hide a top-level command outside staging | `stagingOnly: <message>` on its `commandManifest` entry (`src/commands/manifest.ts`). Outside staging it registers as a hidden command that throws the message |
+| Decide in a handler | `stagingFeaturesEnabled(props.apiHost)`. Without an argument it uses the host the process was invoked with |
+| Decide before yargs runs (help text, option lists) | `stagingFeaturesEnabledForArgv()` |
+| Refuse as a hard stop | Throw `StagingOnlyError`. `resolveDevEnv` rethrows it instead of degrading it to a warning; check before any `try` that turns failures into warnings |
+| Library reads | An explicit opt-in option, off by default. Libraries never read the API host themselves |
+| Tests | `NEON_STAGING_API_HOST` overrides the host that counts as staging, so fixture tests that point `--api-host` at a local mock can enable the feature |
+
+**Removing a gate:** once the feature works in production, delete its call sites and its feature-specific helpers, and remove any library opt-in or make it default on. Dropping only the CLI argument leaves the library read off. Keep `STAGING_API_HOST`, `isStagingApiHost()`, `stagingFeaturesEnabled()`, `stagingFeaturesEnabledForArgv()`, `StagingOnlyError`, the `NEON_STAGING_API_HOST` override, and the `stagingOnly` manifest field, even when nothing uses them anymore, so the next staging-only feature reuses them.
+
 -   **Build**: `pnpm --filter <name> build` runs swagger param generation (`generateOptionsFromSpec.ts` → `src/parameters.gen.ts`, a committed generated file), then `tsc --noEmit` and `tsdown` to `dist/`, then copies `callback.html` into `dist/`. Every non-test source file is an entry, so each keeps its own path under `dist/` and the `./dist/*` wildcard export still resolves; only the private `@neon-internals/*` packages are inlined, into `dist/_chunks/`. It **publishes from the package root** (`bin: dist/cli.js`, `files: ["dist", …]`). The param generator reads the OpenAPI spec from the `@neon/sdk` workspace package's vendored copy (`../sdk/spec/neon-openapi.json`, kept in sync via its `spec:pull` script), so it works offline within the monorepo.
 -   **Lint**: Biome, via a `packages/cli/**` override in the root `biome.json` (relaxes some rules for the migrated upstream code, and enforces `noConsole` since the CLI routes all output through its writer/logger). Root `pnpm lint:ci` (`biome ci`) covers it. `pnpm --filter <name> lint` additionally runs `tsc --noEmit` then `biome check src`.
 -   **Coverage**: needs `@vitest/coverage-v8` because the root CI runs `pnpm test:ci --coverage` (the flag is appended to every package's `test:ci`). Pin it to the package's `vitest` major.
 -   **Standalone binaries**: `pnpm --filter neon bundle` (`node pkg.js`) Rollup-bundles `dist/cli.js` and cross-compiles `linux-x64`, `linux-arm64`, `macos-x64`, and `win-x64` via `@yao-pkg/pkg`; targets/assets are declared in the package's `pkg` block. The binaries are named after the package, so they ship as `neon-<target>`.
 -   **Conformance tests** (`tests/psql-conformance`) need Docker/testcontainers and are excluded from the default Vitest run; run them explicitly with `pnpm --filter <name> test:conformance`.
 -   **Sibling deps**: every internal dependency — the `@neon/*` packages — is `workspace:*`. Never pin one to a published version; see "Publish order" below for the lockfile deadlock that caused.
--   **`neon init` is one flow** in `src/commands/init.ts` / `src/init/run.ts`. A TTY asks Recommended vs Custom. `-y` is Recommended: plugin (or mixed plugin + skills/MCP) for detected agents (global config, project folders, host CLI), or Cursor+Codex skills in this directory when none are detected; link when authenticated; default neon.ts via in-process `config init` (`silent`, `requireInstall`). `-y` with `--skill`, MCP flags, `--no-agent-setup`, or `--project-setup` is Custom: those flags, Recommended defaults for the rest. `--skill` is skills (not plugin); MCP flags are skills and MCP. Unauthenticated `-y` skips link and prints signup / `neon login` / `neon link` / `neon claim create`; with `--org-id`, `--project-id`, and `--branch` it writes `.neon` offline through `runLink({ checks: false })` and prints `neon login`; with fewer account flags it prints `neon login` and `neon link <those flags>`. When init picks MCP auth and the credential cannot mint (`CannotMintApiKeyError`), it configures MCP with OAuth and continues; after an explicit `--mcp-auth` or picker answer it finishes the other steps, prints the failed summary with `neon mcp` retry commands, then rethrows. Interactive Custom keeps plugin vs skills+MCP vs skip, then link or claimable (72h) if unauthenticated, then neon.ts services; package manager is inferred and asked only when none is detected. Mixed is allowed on init, not on bootstrap. Init always sets up the current directory in place and has no template flags. `--agent` skips agent selection and implies Custom when `-y` is omitted. `--no-link` skips linking. Init records `cli_init_start` / `cli_init_end`. `src/init/copy.ts` owns prompt strings. `src/init/chrome.ts` owns the banner and completion summary (stdout, not `log.info`). `src/init/plan.ts` is the planner; `src/init/choices.ts` is config flag resolution; `src/init/wizard.ts` is the pickers; `src/init/tooling.ts` runs the children; `src/init/link.ts` authenticates and runs link in process. Init itself skips global `ensureAuth`. After a new default neon.ts on a pinned branch, init runs child `env pull` unless link already pulled env or the file declares extra services.
+-   **`neon init` is one flow** in `src/commands/init.ts` / `src/init/run.ts`. A TTY asks Recommended vs Custom. `-y` is Recommended: plugin (or mixed plugin + skills/MCP) for detected agents (global config, project folders, host CLI), or Cursor+Codex skills in this directory when none are detected; link when authenticated; default neon.ts via in-process `config init` (`silent`, `requireInstall`). `-y` with `--skill`, MCP flags, `--no-agent-setup`, or `--project-setup` is Custom: those flags, Recommended defaults for the rest. `--skill` is skills (not plugin); MCP flags are skills and MCP. Unauthenticated `-y` skips link and prints signup / `neon login` / `neon link` / `neon claim create`; with `--org-id`, `--project-id`, and `--branch` it writes `.neon` offline through `runLink({ checks: false })` and prints `neon login`; with fewer account flags it prints `neon login` and `neon link <those flags>`. When init picks MCP auth and the credential cannot mint (`CannotMintApiKeyError`), it configures MCP with OAuth and continues; after an explicit `--mcp-auth` or picker answer it finishes the other steps, prints the failed summary with `neon mcp` retry commands, then rethrows. Interactive Custom keeps plugin vs skills+MCP vs skip, then link or claimable (72h) if unauthenticated, then neon.ts services; package manager is inferred and asked only when none is detected. Mixed is allowed on init, not on bootstrap. Init always sets up the current directory in place and has no template flags. `--agent` skips agent selection and implies Custom when `-y` is omitted. `--no-link` skips linking. Init records `cli_init_start` / `cli_init_end`. `src/init/copy.ts` owns prompt strings. `src/init/chrome.ts` owns the banner and completion summary (stdout, not `log.info`). `src/init/plan.ts` is the planner; `src/init/choices.ts` is config flag resolution; `src/init/wizard.ts` is the pickers; `src/init/tooling.ts` runs the children; `src/init/link.ts` authenticates and runs link in process. Init itself skips global `ensureAuth`. Init links with `deferEnvPull` when it may write a new neon.ts, then pulls once after the neon.ts step (`initEnvPullAfterConfig` in `src/init/choices.ts`): from neon.ts when every declared service is deploy-free (AI Gateway, Functions), else `postgres` plus `ai-gateway` and the scaffolded function's URL key when declared, because a policy pull fails while the branch lacks a declared service.
 -   **Package manager detection** lives in `src/utils/package_manager.ts`, and it is the only module allowed to read a lockfile or `npm_config_user_agent`. Installing into a project directory uses `resolvePackageManager(cwd)` (lockfile walk, then invocation, then PATH, then npm); global installs and fresh scaffolds with no lockfile yet use `resolveInvokingPackageManager()`; an interactive flow that can prompt uses `inferPackageManager(cwd)`, which returns undefined rather than guessing. Never spell an install command by hand — `formatInstallCommand()` builds the string for agent JSON and printed hints, `installArgs()` and `globalInstallArgs()` build argv for `runCommand`, and `execCommand()` builds the line that runs a binary the project depends on (`pnpm exec drizzle-kit`, `npx --no prisma`). A hardcoded `npm install` in an agent instruction is a bug: it tells the agent to run npm against a pnpm project. A bare `npx`/`bunx` is a bug too — both download a missing package instead of failing, so use `execCommand()` for anything the project already depends on.
 
 ### The SDK package (`packages/sdk`)
@@ -601,13 +666,19 @@ including a git-vs-npm check that flags packages which changed but lack a change
 
 ### Publish order
 
+**Always publish `neon` before `neonctl`.** `neonctl` wraps `neon`: `pnpm pack` turns its
+`workspace:*` dependency into an exact `neon@<version>` pin, so a `neonctl` published first cannot
+install until the matching `neon` is on npm. Dispatch `-f package=neon`, wait until
+`npm view neon@<version> version` prints the new version (npm can take a few minutes after the run
+goes green), then dispatch `-f package=neonctl`.
+
 **Publish leaf dependencies first, the CLI last:**
 `@neon/config` → `@neon/config-runtime` / `@neon/env` → `neon` → `neonctl`.
 Publishing `neon` also ships the standalone binaries and the GitHub release; publish the
 compatibility package only after `npm view neon version` confirms the matching primary package.
 Verify each with `npm view <pkg> version`. After every successful publish, `npm i -g neon@latest` and `neon --version`.
 
-Ordering is a courtesy to npm consumers, not a build constraint. Every internal dependency is
+Apart from `neon` → `neonctl`, ordering is a courtesy to npm consumers, not a build constraint. Every internal dependency is
 `workspace:*`, so a package is always built and packed against workspace source and never makes a
 registry round-trip for a sibling.
 
@@ -642,7 +713,7 @@ specific to it:
 - **Compatibility command**: `neonctl` is a thin package that depends on `neon` (`workspace:*`)
   and owns only the legacy `neonctl` executable. `pnpm pack` rewrites that to an **exact** version
   pin, so `npm i neonctl` cannot resolve until the matching `neon` is on npm. Publish `neon` first,
-  verify it, then dispatch `-f package=neonctl`. It has no binaries. This ordering applies to every
+  wait for `npm view neon@<version> version`, then dispatch `-f package=neonctl`. It has no binaries. This ordering applies to every
   CLI release, not just the one that introduced the split.
 - **Homebrew**: `brew install neonctl` is a homebrew-core formula built from the npm `neonctl`
   tarball (autobumped by Homebrew's bot), not something this repo publishes. It relies on that

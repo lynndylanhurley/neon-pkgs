@@ -41,6 +41,12 @@ export class ConfigEditError extends Error {
 export type ConfigEdit =
 	| { kind: "service"; service: "auth" | "data-api" | "ai-gateway" }
 	| {
+			kind: "realtime";
+			enabled: true;
+			allowedOrigins?: readonly string[];
+	  }
+	| { kind: "realtime"; enabled: false }
+	| {
 			kind: "function";
 			slug: string;
 			name: string;
@@ -353,6 +359,109 @@ const setToggle = (
 	};
 };
 
+const realtimeValue = (
+	edit: Extract<ConfigEdit, { kind: "realtime" }>,
+): string =>
+	edit.enabled && edit.allowedOrigins !== undefined
+		? `{ allowedOrigins: ${JSON.stringify(edit.allowedOrigins)} }`
+		: String(edit.enabled);
+
+/** Set the complete Realtime desired state while preserving an existing settings object. */
+const setRealtime = (
+	parsed: Parsed,
+	edit: Extract<ConfigEdit, { kind: "realtime" }>,
+): Step => {
+	const desired = realtimeValue(edit);
+	const declaration = `realtime: ${desired},`;
+	const snippet = ["preview: {", `${parsed.unit}${declaration}`, "},"];
+	const previewEntry = findEntry(parsed.root, "preview");
+	if (!previewEntry) {
+		return {
+			source: insertEntry(
+				parsed,
+				parsed.root,
+				snippet,
+				snippet,
+				entryAfter(parsed, "preview"),
+			),
+			change: `added preview.realtime: ${desired}`,
+		};
+	}
+	const preview = objectOf(parsed, previewEntry);
+	if (!preview) {
+		return unsupported(
+			"preview is set to an expression, not an object literal.",
+			snippet,
+		);
+	}
+	const entry = findEntry(preview, "realtime");
+	if (!entry) {
+		return {
+			source: insertEntry(parsed, preview, [declaration], snippet),
+			change: `added preview.realtime: ${desired}`,
+		};
+	}
+
+	const current = parsed.source.slice(entry.valueStart, entry.valueEnd);
+	if (entry.keyed && current === desired) return { source: parsed.source };
+
+	const object = objectOf(parsed, entry);
+	if (edit.enabled && edit.allowedOrigins === undefined && object) {
+		return { source: parsed.source };
+	}
+
+	if (edit.enabled && edit.allowedOrigins !== undefined && object) {
+		const origins = JSON.stringify(edit.allowedOrigins);
+		const allowedOrigins = findEntry(object, "allowedOrigins");
+		if (!allowedOrigins) {
+			return {
+				source: insertEntry(
+					parsed,
+					object,
+					[`allowedOrigins: ${origins},`],
+					snippet,
+				),
+				change: `added preview.realtime.allowedOrigins: ${origins}`,
+			};
+		}
+		if (!allowedOrigins.keyed) {
+			return unsupported(
+				"preview.realtime.allowedOrigins is a computed property.",
+				snippet,
+			);
+		}
+		const currentOrigins = parsed.source.slice(
+			allowedOrigins.valueStart,
+			allowedOrigins.valueEnd,
+		);
+		if (currentOrigins === origins) return { source: parsed.source };
+		return {
+			source:
+				parsed.source.slice(0, allowedOrigins.valueStart) +
+				origins +
+				parsed.source.slice(allowedOrigins.valueEnd),
+			change: `set preview.realtime.allowedOrigins to ${origins}`,
+		};
+	}
+
+	if (
+		!entry.keyed ||
+		(current !== "true" && current !== "false" && !object)
+	) {
+		return unsupported(
+			"preview.realtime is set to an expression, not a boolean or object literal.",
+			snippet,
+		);
+	}
+	return {
+		source:
+			parsed.source.slice(0, entry.valueStart) +
+			desired +
+			parsed.source.slice(entry.valueEnd),
+		change: `set preview.realtime to ${desired}`,
+	};
+};
+
 /**
  * Whether `dataApi` verifies a third-party IdP, in which case it does not need Neon Auth. An
  * `authProvider` that is neither literal is refused rather than assumed to be Neon's.
@@ -420,6 +529,9 @@ const apply = (source: string, edit: ConfigEdit): ConfigEditResult => {
 	};
 
 	switch (edit.kind) {
+		case "realtime":
+			run((parsed) => setRealtime(parsed, edit));
+			break;
 		case "service":
 			if (edit.service === "auth") {
 				run((parsed) => setToggle(parsed, "auth"));

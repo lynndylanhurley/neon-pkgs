@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import yargs from "yargs";
 import { takeCommandSuccessExtras } from "../analytics.js";
 import {
+	CLAIMABLE_ACCOUNT_FLAGS,
 	CLAIMABLE_ALREADY_LINKED,
 	CLAIMABLE_MCP_API_KEY,
 	INIT_NEEDS_YES,
@@ -271,6 +272,37 @@ describe("init handler", () => {
 
 		expect(readFileSync(join(cwd, "neon.ts"), "utf8")).toBe(
 			renderNeonConfig([]),
+		);
+	});
+
+	test("--services realtime writes preview.realtime to neon.ts", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-realtime-"));
+		vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const { initCmd } = await import("./config.js");
+		const { handler } = await import("./init.js");
+
+		await handler(
+			baseProps({
+				cwd,
+				operations: makeOperations(),
+				yes: true,
+				services: ["realtime"],
+				contextFile: join(cwd, ".neon"),
+				initConfig: async (input: {
+					cwd: string;
+					services?: readonly string[];
+				}) =>
+					initCmd({
+						cwd: input.cwd,
+						install: false,
+						silent: true,
+						...(input.services ? { services: input.services } : {}),
+					}),
+			}),
+		);
+
+		expect(readFileSync(join(cwd, "neon.ts"), "utf8")).toContain(
+			"preview: {\n    realtime: true,",
 		);
 	});
 
@@ -1132,6 +1164,55 @@ describe("init handler", () => {
 		expect(createClaimable).toHaveBeenCalled();
 	});
 
+	test("-y --claimable --region-id creates the claimable project in that region", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-claim-region-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const createClaimable = vi.fn().mockResolvedValue(undefined);
+		const { handler } = await import("./init.js");
+
+		await handler(
+			baseProps({
+				cwd,
+				yes: true,
+				claimable: true,
+				regionId: "aws-eu-central-1",
+				agentSetup: false,
+				config: false,
+				hasLocalCredentials: () => false,
+				createClaimable,
+				contextFile: join(cwd, ".neon"),
+			}),
+		);
+
+		expect(createClaimable).toHaveBeenCalledWith(
+			expect.objectContaining({ regionId: "aws-eu-central-1" }),
+		);
+	});
+
+	test("--claimable with an account link flag fails", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-claim-org-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const createClaimable = vi.fn().mockResolvedValue(undefined);
+		const { handler } = await import("./init.js");
+
+		await expect(
+			handler(
+				baseProps({
+					cwd,
+					yes: true,
+					claimable: true,
+					orgId: "org-test",
+					regionId: "aws-eu-central-1",
+					agentSetup: false,
+					config: false,
+					createClaimable,
+					contextFile: join(cwd, ".neon"),
+				}),
+			),
+		).rejects.toThrow(CLAIMABLE_ACCOUNT_FLAGS);
+		expect(createClaimable).not.toHaveBeenCalled();
+	});
+
 	test("--claimable in an already linked directory fails", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "neon-init-claim-linked-"));
 		writeFileSync(join(cwd, "package.json"), "{}\n");
@@ -1602,7 +1683,7 @@ describe("init handler", () => {
 		);
 	});
 
-	test("extra services skip env pull after writing neon.ts", async () => {
+	test("services awaiting a deploy pull only Postgres after writing neon.ts", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "neon-init-extra-svc-"));
 		writeFileSync(join(cwd, "package.json"), "{}\n");
 		const contextFile = join(cwd, ".neon");
@@ -1627,8 +1708,195 @@ describe("init handler", () => {
 			}),
 		);
 
-		expect(envPull).not.toHaveBeenCalled();
-		expect(stdoutText(stdout)).toContain("neon config plan");
+		expect(envPull).toHaveBeenCalledTimes(1);
+		expect(envPull).toHaveBeenCalledWith(
+			expect.objectContaining({ services: ["postgres"] }),
+		);
+		const out = stdoutText(stdout);
+		expect(out).toContain("neon checkout dev --create");
+		expect(out).toContain("neon config plan");
+		expect(out).toContain("neon deploy");
+		expect(out).not.toContain("neon env pull");
+		expect(out).not.toContain("neon dev\n");
+	});
+
+	test("Functions next to a service awaiting a deploy keep their URL", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-fn-auth-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const contextFile = join(cwd, ".neon");
+		writeFileSync(
+			contextFile,
+			`${JSON.stringify({ projectId: "proj-1", branch: "main" })}\n`,
+		);
+		const envPull = vi.fn().mockResolvedValue({ status: "empty" });
+		const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const { handler } = await import("./init.js");
+
+		await handler(
+			baseProps({
+				cwd,
+				operations: makeOperations(),
+				envPull,
+				yes: true,
+				link: false,
+				services: ["auth", "functions"],
+				contextFile,
+				detectProjectAgents: () => ["cursor"],
+			}),
+		);
+
+		expect(envPull).toHaveBeenCalledWith(
+			expect.objectContaining({
+				services: ["postgres"],
+				envKeys: ["NEON_FUNCTION_HELLO_BASE_URL"],
+			}),
+		);
+		const out = stdoutText(stdout);
+		expect(out.indexOf("neon deploy")).toBeLessThan(
+			out.indexOf("neon dev\n"),
+		);
+	});
+
+	test.each([
+		{
+			name: "a Postgres-only neon.ts",
+			config: undefined,
+			expected: "neon config plan",
+		},
+		{ name: "--no-config", config: false, expected: "neon config init" },
+	])("-y next steps after $name", async ({ config, expected }) => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-next-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const contextFile = join(cwd, ".neon");
+		const linkProject = vi.fn(async () => {
+			writeFileSync(
+				contextFile,
+				`${JSON.stringify({ projectId: "proj-1", branch: "main" })}\n`,
+			);
+		});
+		const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const { handler } = await import("./init.js");
+
+		await handler(
+			baseProps({
+				cwd,
+				operations: makeOperations(),
+				contextFile,
+				linkProject,
+				yes: true,
+				detectProjectAgents: () => ["cursor"],
+				...(config === false ? { config: false } : {}),
+			}),
+		);
+
+		const out = stdoutText(stdout);
+		expect(out).toContain("Neon setup complete.");
+		expect(out).toContain(expected);
+		if (config === false) {
+			expect(out).not.toContain("neon deploy");
+		} else {
+			expect(out).toContain(
+				"Deploy to your Neon project:\n  neon deploy",
+			);
+			expect(out).toContain("neon checkout dev --create");
+			expect(out).toContain("Neon agent skills");
+			expect(out).not.toContain("neon config init");
+		}
+	});
+
+	test("link defers its env pull until neon.ts declares the services", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-deferred-pull-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const contextFile = join(cwd, ".neon");
+		const order: string[] = [];
+		const linkProject = vi.fn(async () => {
+			order.push("link");
+			writeFileSync(
+				contextFile,
+				`${JSON.stringify({ projectId: "proj-1", branch: "main" })}\n`,
+			);
+		});
+		const initConfig = vi.fn(async () => {
+			order.push("config");
+		});
+		const envPull = vi.fn(async () => {
+			order.push("env pull");
+			return { status: "empty" as const };
+		});
+		const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const { handler } = await import("./init.js");
+
+		await handler(
+			baseProps({
+				cwd,
+				operations: makeOperations(),
+				contextFile,
+				linkProject,
+				initConfig,
+				envPull,
+				pickAgentSetup: async () => "plugin",
+				detectProjectAgents: () => ["cursor"],
+				pickConfig: async () => true,
+				pickServices: async () => ["ai-gateway", "functions"],
+				pickPackageManager: async () => "npm",
+			}),
+		);
+
+		expect(order).toEqual(["link", "config", "env pull"]);
+		expect(linkProject).toHaveBeenCalledWith(
+			expect.objectContaining({ envPull: true, deferEnvPull: true }),
+		);
+		expect(envPull).toHaveBeenCalledWith(
+			expect.not.objectContaining({ services: expect.anything() }),
+		);
+		const out = stdoutText(stdout);
+		expect(out).toContain("Neon agent skills");
+		const positions = [
+			"neon config plan",
+			"neon deploy",
+			"Optional, once deployed:",
+			"neon dev\n",
+			"neon checkout dev --create",
+			"Neon agent skills",
+		].map((text) => out.indexOf(text));
+		expect(positions.every((at) => at >= 0)).toBe(true);
+		expect(positions).toEqual(
+			[...positions].sort((left, right) => left - right),
+		);
+	});
+
+	test("link still gets env pulled when neon.ts is declined", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "neon-init-declined-ts-"));
+		writeFileSync(join(cwd, "package.json"), "{}\n");
+		const contextFile = join(cwd, ".neon");
+		const linkProject = vi.fn(async () => {
+			writeFileSync(
+				contextFile,
+				`${JSON.stringify({ projectId: "proj-1", branch: "main" })}\n`,
+			);
+		});
+		const initConfig = vi.fn().mockResolvedValue(undefined);
+		const envPull = vi.fn().mockResolvedValue({ status: "empty" });
+		const { handler } = await import("./init.js");
+
+		await handler(
+			baseProps({
+				cwd,
+				operations: makeOperations(),
+				contextFile,
+				linkProject,
+				initConfig,
+				envPull,
+				pickAgentSetup: async () => "skip",
+				pickConfig: async () => false,
+			}),
+		);
+
+		expect(initConfig).not.toHaveBeenCalled();
+		expect(envPull).toHaveBeenCalledTimes(1);
+		expect(envPull).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-1", branch: "main" }),
+		);
 	});
 
 	test("env pull after neon.ts forwards an explicit API key", async () => {
@@ -2093,12 +2361,19 @@ describe("init flag parsing", () => {
 			config?: boolean;
 			link?: boolean;
 			agentSetup?: boolean;
+			services?: string[];
 		};
 
 	test("--config is a three-state flag", async () => {
 		expect((await parse([])).config).toBeUndefined();
 		expect((await parse(["--config"])).config).toBe(true);
 		expect((await parse(["--no-config"])).config).toBe(false);
+	});
+
+	test("--services accepts realtime", async () => {
+		expect((await parse(["--services", "realtime"])).services).toEqual([
+			"realtime",
+		]);
 	});
 
 	test("--no-link skips project linking", async () => {

@@ -29,6 +29,8 @@ import { setDeadlineTimer } from "./timer.js";
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const SOCKET_CLOSING = 2;
+const SOCKET_CLOSED = 3;
+const SOCKET_CLOSE_GRACE_MS = 1_000;
 const NORMAL_CLOSE = 1_000;
 const APPLICATION_CLOSE = 4_000;
 
@@ -40,7 +42,8 @@ export interface ConnectionCallbacks {
 	readonly events?: SubscriptionEventSink;
 	readonly reconciliation: ReconciliationTarget;
 	admitted(columns: readonly WireColumn[]): void;
-	disconnected(): void;
+	connecting(): void;
+	queryUnavailable(): void;
 	failed(error: ConnectionCoordinatorError): void;
 }
 
@@ -69,6 +72,8 @@ export interface WebSocketLike {
 	addEventListener(type: "error", listener: () => void): void;
 	send(data: string): void;
 	close(code?: number, reason?: string): void;
+	/** Immediately destroy the transport when the implementation supports it. */
+	terminate?(): void;
 }
 
 export type WebSocketFactory = (
@@ -162,19 +167,17 @@ export class ConnectionCoordinator {
 	private requestId = 0n;
 	private ready = false;
 	private disposed = false;
-	private terminalConnection = false;
+	private terminalConnection?: ConnectionCoordinatorError;
 	private pendingConnectionError?: ConnectionCoordinatorError;
 
 	constructor(private readonly options: ConnectionCoordinatorOptions) {
 		if (!options.url) throw new Error("Realtime requires a WebSocket URL");
 		this.events = options.events ?? SILENT_CLIENT_EVENTS;
-		this.reconciler =
+		this.reconciler = new BaselineSyncPublicationReconciler(
 			this.events === SILENT_CLIENT_EVENTS
-				? new BaselineSyncPublicationReconciler()
-				: new BaselineSyncPublicationReconciler(
-						{},
-						this.reconciliationEvents(),
-					);
+				? undefined
+				: this.reconciliationEvents(),
+		);
 		this.webSocketFactory =
 			options.webSocketFactory ?? defaultWebSocketFactory;
 		if (options.reconnect !== false) {
@@ -231,8 +234,12 @@ export class ConnectionCoordinator {
 		this.managedSubscriptions.add(managed);
 		this.activeSubscriptions.add(managed);
 		managed.events.started();
-		this.connect();
-		if (this.ready) this.sendSubscribe(managed);
+		if (this.terminalConnection) {
+			this.failSubscription(managed, this.terminalConnection);
+		} else {
+			this.connect();
+			if (this.ready) this.sendSubscribe(managed);
+		}
 		return Object.freeze({
 			renew: (replacement: ConnectionSealedQuery) =>
 				this.renew(managed, replacement),
@@ -298,6 +305,7 @@ export class ConnectionCoordinator {
 		if (subscription.state === "awaiting_query") {
 			subscription.state = "active";
 			this.activeSubscriptions.add(subscription);
+			subscription.callbacks.connecting();
 			this.connect();
 			if (this.ready) this.sendSubscribe(subscription);
 			return renewal.promise;
@@ -377,7 +385,7 @@ export class ConnectionCoordinator {
 		try {
 			const frame = decodeServerFrame(text);
 			this.heartbeat?.received();
-			this.route(frame.message, frame.byteLength, frame.mvcc);
+			this.route(frame.message, frame.mvcc);
 		} catch (error) {
 			this.protocolFailure(
 				error instanceof Error
@@ -387,11 +395,7 @@ export class ConnectionCoordinator {
 		}
 	}
 
-	private route(
-		message: ServerMessage,
-		byteLength: number,
-		mvcc?: ParsedMvccSnapshot,
-	): void {
+	private route(message: ServerMessage, mvcc?: ParsedMvccSnapshot): void {
 		if (!this.ready) {
 			if (message.type === "ping") {
 				this.send({ type: "pong", token: message.token });
@@ -448,7 +452,7 @@ export class ConnectionCoordinator {
 			case "reset_required":
 			case "commit":
 			case "progress":
-				this.reconciler.accept(message, byteLength, mvcc);
+				this.reconciler.accept(message, mvcc);
 				return;
 		}
 	}
@@ -634,7 +638,7 @@ export class ConnectionCoordinator {
 			this.reconciler.remove(subscription.liveId);
 		}
 		subscription.resetWire();
-		subscription.callbacks.disconnected();
+		subscription.callbacks.connecting();
 	}
 
 	private connectionError(code: string, message: string): void {
@@ -719,7 +723,7 @@ export class ConnectionCoordinator {
 		}
 		for (const subscription of this.activeSubscriptions) {
 			subscription.resetWire();
-			subscription.callbacks.disconnected();
+			subscription.callbacks.connecting();
 		}
 		if (
 			!this.disposed &&
@@ -880,7 +884,7 @@ export class ConnectionCoordinator {
 		}
 		subscription.resetWire();
 		subscription.events.queryUnavailable(error);
-		subscription.callbacks.disconnected();
+		subscription.callbacks.queryUnavailable();
 
 		if (
 			rejectedCapability !== undefined &&
@@ -888,6 +892,7 @@ export class ConnectionCoordinator {
 		) {
 			subscription.state = "active";
 			this.activeSubscriptions.add(subscription);
+			subscription.callbacks.connecting();
 			this.connect();
 			if (this.ready) this.sendSubscribe(subscription);
 			return;
@@ -910,7 +915,7 @@ export class ConnectionCoordinator {
 	}
 
 	private terminateConnection(error: ConnectionCoordinatorError): void {
-		this.terminalConnection = true;
+		this.terminalConnection = error;
 		this.cancelReconnectEpisode();
 		const subscriptions = [...this.managedSubscriptions].filter(
 			(subscription) =>
@@ -963,11 +968,23 @@ export class ConnectionCoordinator {
 		this.heartbeat?.stop();
 		const socket = this.socket;
 		if (!socket) return;
+		let forceCloseTimer: ReturnType<typeof setTimeout> | undefined;
+		socket.addEventListener("close", () => {
+			if (forceCloseTimer !== undefined) clearTimeout(forceCloseTimer);
+			forceCloseTimer = undefined;
+		});
 		// Detach before close(): it can synchronously emit error, and a failed
 		// handshake may never emit close. Retire the wire attempt ourselves.
 		this.socket = undefined;
 		try {
 			if (socket.readyState < SOCKET_CLOSING) socket.close(code, reason);
+			const terminate = socket.terminate?.bind(socket);
+			if (terminate && socket.readyState < SOCKET_CLOSED) {
+				forceCloseTimer = setTimeout(() => {
+					forceCloseTimer = undefined;
+					if (socket.readyState < SOCKET_CLOSED) terminate();
+				}, SOCKET_CLOSE_GRACE_MS);
+			}
 		} finally {
 			this.disconnected();
 		}

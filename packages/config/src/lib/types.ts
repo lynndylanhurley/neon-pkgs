@@ -164,6 +164,25 @@ export interface ServiceToggle {
 export type ServiceToggleInput = boolean | ServiceToggle;
 
 /**
+ * Realtime settings for a branch. The object's presence enables Realtime; omit
+ * `allowedOrigins` to leave the inherited/current allowlist unchanged.
+ */
+export interface RealtimeConfig {
+	/** Browser origins allowed to connect. `[]` or `["*"]` allows every origin. */
+	allowedOrigins?: readonly string[];
+}
+
+/**
+ * How Realtime is managed by a policy.
+ *
+ * - `true` — enable Realtime without changing allowed origins.
+ * - `{ allowedOrigins?: [...] }` — enable Realtime and optionally configure origins.
+ * - `false` — disable Realtime.
+ * - omitted (`undefined`) — leave Realtime unmanaged.
+ */
+export type RealtimeInput = boolean | RealtimeConfig;
+
+/**
  * Resolve a **static** service toggle (`true` / `false` / `{ enabled?: boolean }` / object /
  * `undefined`) to a type-level boolean. The tuple wrapping (`[T] extends […]`) disables
  * distribution so a union/`undefined` is judged as a single unit:
@@ -563,15 +582,10 @@ export interface BucketDef {
 	access?: BucketAccessLevel;
 }
 
-/**
- * Deprecated home for AI Gateway, Functions, and Object Storage.
- *
- * Those services are GA as top-level `aiGateway`, `functions`, and `buckets`.
- * A `preview` block still works; deploy/apply warns that the keys can be lifted.
- *
- * @deprecated Use top-level `aiGateway`, `functions`, and `buckets`.
- */
+/** Preview features, plus deprecated homes for services that have graduated to GA. */
 export interface PreviewInput {
+	/** Enable, configure, or disable Realtime on every branch this policy is applied to. */
+	realtime?: RealtimeInput;
 	/**
 	 * Enable/disable the AI Gateway on the branch (toggle, like auth / dataApi).
 	 * @deprecated Use top-level `aiGateway`.
@@ -750,9 +764,7 @@ export interface Config<
 	 * are deployed. Triggers that exist remotely but are omitted here are left alone.
 	 */
 	triggers?: Record<string, FunctionTriggerDef>;
-	/**
-	 * @deprecated Use top-level `aiGateway`, `functions`, and `buckets`.
-	 */
+	/** Preview features and deprecated aliases for graduated services. */
 	preview?: Preview;
 	/** Per-branch tuning closure. Cannot change the static existential set. */
 	branch?: BranchTuningFn<Preview, Functions>;
@@ -1118,6 +1130,10 @@ export interface ResolvedBranchConfig {
 	ttlSeconds?: number;
 	protected?: boolean;
 	postgres?: PostgresConfig;
+	/** Optional for compatibility with hand-built configs. */
+	realtimePolicy?: "omitted" | "enabled" | "disabled";
+	/** Realtime options to apply when {@link realtimePolicy} is `"enabled"`. */
+	realtime?: RealtimeConfig;
 	authEnabled: boolean;
 	dataApiEnabled: boolean;
 	/** Optional for compatibility with hand-built configs. */

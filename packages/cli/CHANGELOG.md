@@ -1,5 +1,126 @@
 # neon
 
+## 8.8.0
+
+### Minor Changes
+
+- 6ea34bc: `neon claim create --region-id <region>` and `neon init --claimable --region-id <region>` create the claimable project in that region. Without the flag, the project is still created in `aws-us-east-2`. `claim create` output now includes `region_id`.
+
+## 8.7.2
+
+### Patch Changes
+
+- Updated dependencies [0cee585]
+- Updated dependencies [8ac70da]
+  - @neon/sdk@7.3.0
+  - @neon/config@1.9.2
+  - @neon/config-runtime@1.10.1
+
+## 8.7.1
+
+### Patch Changes
+
+- 9b6eadd: `neon bootstrap` prints `Installing dependencies with <package manager>…` before it runs the install.
+
+## 8.7.0
+
+### Minor Changes
+
+- abbd5a8: Add `neon realtime rotate-secret` to replace a branch's Realtime shared secret. The command waits for rotation to complete by default; pass `--no-wait` to return after submitting the request.
+
+## 8.6.1
+
+### Patch Changes
+
+- b43cffd: `neon init` now prints `neon config plan`, `neon deploy`, and the optional branch and agent-skills steps after every new `neon.ts`, including the default Postgres-only one. With `--no-config`, it suggests `neon config init`. The deploy step reads "Deploy to your Neon project:".
+
+## 8.6.0
+
+### Minor Changes
+
+- e88863a: `neon dev` loads the project's `.env`, then `.env.local`, which overrides it, into the environment before evaluating `neon.ts`, so Function env values such as `process.env.DISCORD_PUBLIC_KEY!` resolve locally. Variables already set in the shell win. `neon dev --env <file>` loads only that file, like `neon deploy --env`.
+
+### Patch Changes
+
+- 8a4387f: `neon init` now pulls environment variables after writing `neon.ts`, so `.env.local` includes the AI Gateway and Functions variables for the services you selected. The next steps now point to the Neon agent skills, `neon dev` when Functions are selected, `neon checkout dev --create`, `neon config plan`, and `neon deploy`.
+
+## 8.5.0
+
+### Minor Changes
+
+- d123ab5: Neon Realtime works against the production API. `neon realtime` (including `neon realtime subscribe`), `neon config add realtime`, `--services realtime`, and `preview.realtime` in `neon.ts` no longer require `NEON_API_HOST` to point at staging, and `neon env pull`, `neon config status`, and `neon dev` read the branch's Realtime state again. `pullConfig` and `inspect` read Realtime by default; pass `realtime: false` to skip it.
+
+### Patch Changes
+
+- 7413f64: Rename Realtime subscription output events from `reset` and `batch` to `rows` and `changes`, matching the SDK terminology.
+- 72576e7: Add `neon-realtime` to `neon skills`. `neon skills -y` and `neon init -y` install it with the other default Neon skills.
+- Updated dependencies [d123ab5]
+  - @neon/config-runtime@1.10.0
+
+## 8.4.5
+
+### Patch Changes
+
+- e952716: List top-level commands alphabetically in `neon --help` so commands are easier to find.
+- f145dbc: Move the Realtime query subscription command from `neon subscribe` to `neon realtime subscribe`.
+
+## 8.4.4
+
+### Patch Changes
+
+- 37e0381: When a successful Neon API response has a body that cannot be parsed, commands now fail with `Could not read the Neon API response (<status>) to <path>: <reason>` instead of crashing with `TypeError: Cannot read properties of undefined`.
+
+## 8.4.3
+
+### Patch Changes
+
+- fb929cd: Make `neon subscribe` terminal output an append-only live-query view with target details, lifecycle states, one initial snapshot, and compact transaction summaries, while preserving JSON Lines and YAML event streams for agents and scripts.
+
+## 8.4.2
+
+### Patch Changes
+
+- edc3bed: Install the WebSocket transport required by `neon subscribe` so direct Realtime subscriptions work from clean and global CLI installations.
+
+## 8.4.1
+
+### Patch Changes
+
+- 3c08c9b: Arguments after `--` on `neon psql`, `neon connection-string --psql`, `neon branches create --psql`, and `neon projects create --psql` now reach psql exactly as typed. Numeric-looking values were rewritten (`1e3` became `1000`), and the embedded psql crashed on them.
+- aeff82c: Neon Realtime is staging-only for now. Outside `NEON_API_HOST` / `--api-host` pointing at `https://console-stage.neon.build/api/v2`, `neon realtime`, `neon subscribe`, `neon config add realtime`, `--services realtime`, and a `neon.ts` that declares `preview.realtime` fail with "Neon Realtime is coming soon!", and `neon env pull`, `neon config status`, and the env pull in `neon init` / `link` / `checkout` no longer read Realtime. `pullConfig` and `inspect` read Realtime only with `realtime: true`.
+- 65c1fca: A single-value flag given twice with different values (`--parent a --parent b`, `--branch a --branch b`, `-o json --output yaml`) now fails with `--<flag> was given more than once. Pass it at most once.` It used to crash, look up a branch named `a,b`, or fall back to table output. The same value given twice still works.
+- Updated dependencies [aeff82c]
+- Updated dependencies [5f572b6]
+  - @neon/config-runtime@1.9.1
+  - @neon/sdk@7.2.0
+  - @neon/config@1.9.1
+
+## 8.4.0
+
+### Minor Changes
+
+- 681014f: Add `neon subscribe` for streaming a live SQL query in the terminal. It uses the linked project and branch by default, supports explicit project and branch flags, and can print complete snapshots or raw Realtime change events.
+- 33325b3: Add Realtime as a branch-level preview feature in `neon.ts`. `neon init --services realtime` and `neon config add realtime [--allowed-origin <origin>]` declare it for plan and deploy, while `neon realtime enable` and `neon realtime disable` manage the selected branch directly.
+- 5e276fd: Expose the Realtime WebSocket URL and server-only secret through `@neon/env` and `neon env pull`. Config-aware pulls wait for asynchronous Realtime provisioning before returning `NEON_REALTIME_URL` and `NEON_REALTIME_SECRET`; applications derive the database name from `DATABASE_URL`.
+
+### Patch Changes
+
+- Updated dependencies [025988c]
+- Updated dependencies [33325b3]
+- Updated dependencies [5e276fd]
+  - @neon/sdk@7.1.0
+  - @neon/config@1.9.0
+  - @neon/config-runtime@1.9.0
+
+## 8.3.6
+
+### Patch Changes
+
+- bb25e72: When Neon Auth can't be provisioned on a branch (for example because the database already has a `neon_auth` schema), `neon neon-auth enable` now shows the API's reason instead of "Neon Auth is not enabled for this branch", and in that case `neon deploy` / `neon config apply` no longer append a hint about name collisions.
+- Updated dependencies [bb25e72]
+  - @neon/config@1.8.7
+  - @neon/config-runtime@1.8.1
+
 ## 8.3.5
 
 ### Patch Changes

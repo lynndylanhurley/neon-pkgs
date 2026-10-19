@@ -10,7 +10,10 @@ import type { ReactNode } from "react";
 export interface RealtimeProviderProps {
 	/** Shared browser client made available to descendant hooks. */
 	readonly client: RealtimeClient;
-	/** React subtree that may call {@link useLiveQuery}. */
+	/**
+	 * React subtree that may call {@link useLiveQuery} or
+	 * {@link useRealtimeClient}.
+	 */
 	readonly children: ReactNode;
 }
 
@@ -20,7 +23,10 @@ export interface RealtimeProviderProps {
  * @typeParam Row - Row produced by the sealed query.
  */
 export interface UseLiveQueryOptions<Row> {
-	/** Server-rendered or otherwise preloaded rows exposed initially as stale. */
+	/**
+	 * Decoded rows exposed immediately, including during server rendering.
+	 * Restore values changed by transport serialization before passing them here.
+	 */
 	readonly initialData?: readonly Row[];
 	/**
 	 * Obtain a replacement capability for the same exact query before expiry.
