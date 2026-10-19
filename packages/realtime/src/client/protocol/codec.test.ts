@@ -334,16 +334,96 @@ describe("Realtime v1 JSON codec", () => {
 		).toThrow(ProtocolError);
 	});
 
-	it("accepts server messages larger than the former 1 MiB limit", () => {
+	it("does not impose a client cap at the server's 2 MiB message limit", () => {
 		expect(() =>
 			decodeServerMessage(
 				JSON.stringify({
 					type: "connection_error",
 					code: "protocol_error",
-					message: "x".repeat(1024 * 1024),
+					message: "x".repeat(2 * 1024 * 1024),
 				}),
 			),
 		).not.toThrow();
+	});
+
+	it.each([
+		"baseline_sync_batch",
+		"keyed_results",
+	] as const)("decodes a 2 MiB %s chunk containing multiple complete rows", (type) => {
+		const rows = Array.from({ length: 8 }, (_, index) => ({
+			row_key: index.toString(16).padStart(64, "0"),
+			values: [""],
+		}));
+		const message =
+			type === "baseline_sync_batch"
+				? {
+						type,
+						live_id: "1",
+						epoch: "1",
+						baseline_sync_attempt: "1",
+						index: 0,
+						rows,
+					}
+				: {
+						type,
+						publication_id: "p",
+						index: 0,
+						txids: ["1"],
+						targets: [{ live_id: "1", epoch: "1", sequence: "1" }],
+						changes: rows.map((row) => ({ op: "upsert", ...row })),
+					};
+		let remaining =
+			2 * 1024 * 1024 - Buffer.byteLength(JSON.stringify(message));
+		for (const row of rows) {
+			const bytes = Math.min(remaining, 256 * 1024);
+			row.values[0] = "x".repeat(bytes);
+			remaining -= bytes;
+		}
+		const text = JSON.stringify(message);
+		expect(remaining).toBe(0);
+		expect(Buffer.byteLength(text)).toBe(2 * 1024 * 1024);
+		expect(decodeServerMessage(text)).toEqual(message);
+	});
+
+	it("decodes a 320 KiB row after sixfold JSON escaping", () => {
+		const message = {
+			type: "baseline_sync_batch",
+			live_id: "1",
+			epoch: "1",
+			baseline_sync_attempt: "1",
+			index: 0,
+			rows: [
+				{
+					row_key: ROW_KEY,
+					values: [
+						"\u0001".repeat(256 * 1024),
+						"\u0001".repeat(64 * 1024 - 10),
+					],
+				},
+			],
+		};
+		const text = JSON.stringify(message);
+		expect(Buffer.byteLength(text)).toBeGreaterThan(1024 * 1024);
+		expect(Buffer.byteLength(text)).toBeLessThan(2 * 1024 * 1024);
+		expect(decodeServerMessage(text)).toEqual(message);
+	});
+
+	it("decodes a 256 KiB binary value after base64 expansion", () => {
+		const bytes = Buffer.alloc(256 * 1024, 0xff);
+		const message = {
+			type: "baseline_sync_batch",
+			live_id: "1",
+			epoch: "1",
+			baseline_sync_attempt: "1",
+			index: 0,
+			rows: [
+				{
+					row_key: ROW_KEY,
+					values: [{ base64: bytes.toString("base64") }],
+				},
+			],
+		};
+		expect(decodeServerMessage(JSON.stringify(message))).toEqual(message);
 	});
 
 	it("keeps the production validator generated from the authoritative schema", () => {

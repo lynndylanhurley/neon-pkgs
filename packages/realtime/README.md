@@ -487,3 +487,33 @@ The package exports its versioned protocol and decoded capability schemas at
 `@neon/realtime/schema/realtime-query-capability-v1.schema.json`.
 See the [schema maintenance notes](schema/README.md) for generation and
 downstream synchronization.
+
+### Output sizes and memory
+
+The SDK accepts complete JSON WebSocket messages without imposing a message-size
+or cumulative-staging byte cap. Older SDK releases imposed a 1 MiB limit on each
+incoming message, including its envelope and JSON/base64 encoding.
+
+The server's large-output profile uses these separate bounds:
+
+| Boundary | Limit | What is measured |
+| --- | ---: | --- |
+| Output value | 256 KiB | UTF-8 text bytes or raw binary bytes |
+| Output row | 320 KiB | All visible value bytes plus five accounting bytes per cell |
+| Server message | 2 MiB | Complete UTF-8 JSON message, including its envelope and encoding |
+
+These are server limits, not additional SDK validation rules. Availability depends
+on the server deployment. Query parameters retain their separate 16 KiB limit.
+
+A `baseline_sync_batch` or `keyed_results` message is a chunk of a larger result.
+The server splits batches between rows after encoding-size accounting; it never
+splits a row or value across messages. JSON escaping can expand text by up to six
+times, and base64 expands binary data by roughly one third, so the message budget
+must exceed the raw row budget.
+
+The SDK retains a complete baseline until installation and buffers publications
+until commit. Splitting messages does not bound total browser memory: decoded
+strings, row objects, retained collection state and adapter copies also consume
+memory. Use bounded query results and avoid selecting large columns that the
+application does not need. Server baseline, publication and backlog budgets can
+still reject a query even when each individual value fits.

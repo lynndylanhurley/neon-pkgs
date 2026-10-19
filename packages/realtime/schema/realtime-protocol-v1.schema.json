@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://neon.tech/schemas/realtime/realtime-protocol-v1.schema.json",
   "title": "Neon Realtime protocol v1",
+  "$comment": "Large-output server deployments allow 262144 bytes (256 KiB) per output value, 327680 bytes (320 KiB) per row including five accounting bytes per visible cell, and 2097152 UTF-8 bytes (2 MiB) per complete outgoing JSON WebSocket message. Value sizes count UTF-8 text or decoded binary bytes; message sizes include JSON escaping, base64 expansion and the envelope. Messages can contain chunks of a larger baseline or publication. Batches may split between rows, but rows and cells are never fragmented. These operational server limits are separate from structural schema validation and cumulative-result budgets; the SDK imposes no message-size or cumulative-staging byte cap.",
   "type": "object",
   "$defs": {
     "u64": {
