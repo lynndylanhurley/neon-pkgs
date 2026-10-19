@@ -1150,6 +1150,158 @@ describe("RealtimeClient", () => {
 		client.close();
 	});
 
+	it("replaces the internal subscription across envelope versions", async () => {
+		useFakeWebSocket();
+		const client = createRealtimeClient({
+			url: "ws://live.test/v1",
+		});
+		const subscription = client.subscribe(query("initial"));
+		const socket = connectAndAdmit();
+		baselineSync(socket, "before");
+		const states: string[] = [];
+		const resets: unknown[] = [];
+		subscription.onStateChange((state) => states.push(state.status));
+		subscription.onUpdate((update) => {
+			if (update.type === "rows") resets.push(update.rows);
+		});
+		let transactionSeen = false;
+		const transaction = subscription.awaitTxId("42").then(() => {
+			transactionSeen = true;
+		});
+		const replacement = query("replacement", "22".repeat(32), 2);
+
+		const renewal = subscription.renew(replacement);
+
+		expect(subscription.getSnapshot()).toEqual({
+			status: "connecting",
+			error: undefined,
+			data: [{ id: 1, title: "before" }],
+		});
+		expect(socket.sent.slice(-2)).toEqual([
+			{
+				type: "subscribe",
+				request_id: "2",
+				authorization: replacement.capability,
+			},
+			{ type: "unsubscribe", live_id: "41" },
+		]);
+		socket.receive({
+			type: "subscribed",
+			request_id: "2",
+			live_id: "42",
+			epoch: "2",
+			first_sequence: "1",
+			columns: [
+				{ name: "id", type_oid: 23, typmod: -1, codec: "pg_text" },
+				{
+					name: "title",
+					type_oid: 25,
+					typmod: -1,
+					codec: "pg_text",
+				},
+			],
+		});
+		await expect(renewal).resolves.toBeUndefined();
+		expect(transactionSeen).toBe(false);
+		socket.receive({ type: "unsubscribed", live_id: "41" });
+		baselineSync(socket, "after", "42", "2");
+		socket.receive({
+			type: "progress",
+			mvcc: { xmin: "43", xmax: "43", xip: [] },
+		});
+		await transaction;
+
+		expect(subscription.getSnapshot()).toEqual({
+			status: "live",
+			error: undefined,
+			data: [{ id: 1, title: "after" }],
+		});
+		expect(states).toEqual(["connecting", "live"]);
+		expect(resets).toEqual([
+			[{ rowId: ROW_KEY, row: { id: 1, title: "after" } }],
+		]);
+		expect(transactionSeen).toBe(true);
+		await expect(
+			subscription.renew(query("other", "33".repeat(32), 2)),
+		).rejects.toThrow("same query");
+		client.close();
+	});
+
+	it("replaces a raw subscription across envelope versions", async () => {
+		useFakeWebSocket();
+		const client = createRealtimeClient({ url: "ws://live.test/v1" });
+		const subscription = client.subscribe(query("initial"), {
+			materialize: false,
+		});
+		const updates: unknown[] = [];
+		subscription.onUpdate((update) => updates.push(update));
+		const socket = connectAndAdmit();
+		baselineSync(socket, "before");
+
+		const renewal = subscription.renew(
+			query("replacement", "22".repeat(32), 2),
+		);
+		socket.receive({
+			type: "subscribed",
+			request_id: "2",
+			live_id: "42",
+			epoch: "2",
+			first_sequence: "1",
+			columns: [
+				{ name: "id", type_oid: 23, typmod: -1, codec: "pg_text" },
+				{
+					name: "title",
+					type_oid: 25,
+					typmod: -1,
+					codec: "pg_text",
+				},
+			],
+		});
+		await renewal;
+		baselineSync(socket, "after", "42", "2");
+
+		expect(updates).toEqual([
+			{
+				type: "rows",
+				rows: [{ rowId: ROW_KEY, row: { id: 1, title: "before" } }],
+			},
+			{
+				type: "rows",
+				rows: [{ rowId: ROW_KEY, row: { id: 1, title: "after" } }],
+			},
+		]);
+		client.close();
+	});
+
+	it("allows reentrant unsubscribe while replacing an envelope version", async () => {
+		useFakeWebSocket();
+		const client = createRealtimeClient({ url: "ws://live.test/v1" });
+		const subscription = client.subscribe(query("initial"));
+		const socket = connectAndAdmit();
+		baselineSync(socket, "before");
+		subscription.onStateChange((state) => {
+			if (state.status === "connecting") subscription.unsubscribe();
+		});
+
+		const renewal = subscription.renew(
+			query("replacement", "22".repeat(32), 2),
+		);
+
+		await expect(renewal).rejects.toThrow("subscription is closed");
+		expect(subscription.getState().status).toBe("closed");
+		expect(socket.sent.slice(-2)).toEqual([
+			{
+				type: "subscribe",
+				request_id: "2",
+				authorization: query("replacement", "22".repeat(32), 2)
+					.capability,
+			},
+			{ type: "unsubscribe", live_id: "41" },
+		]);
+		expect(socket.readyState).toBe(3);
+		client.close();
+	});
+
 	it("reports rejected renewal attempts without warning for superseded ones", async () => {
 		useFakeWebSocket();
 		vi.useFakeTimers();
@@ -1602,8 +1754,10 @@ function publication(
 function query(
 	capabilityId: string,
 	queryFingerprint = QUERY_FINGERPRINT,
+	version?: 2,
 ): SealedLiveQuery<MessageRow> {
 	return {
+		...(version === undefined ? {} : { version }),
 		capability: compactJwe(capabilityId),
 		queryFingerprint,
 		expiresAt: Date.now() + 60_000,

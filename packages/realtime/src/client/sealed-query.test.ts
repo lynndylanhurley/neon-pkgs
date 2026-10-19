@@ -1,5 +1,5 @@
-import { describe, expectTypeOf, it } from "vitest";
-import type { SealedLiveQuery } from "./sealed-query.js";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import { type SealedLiveQuery, validateSealedQuery } from "./sealed-query.js";
 import type {
 	MaterializedLiveQuerySubscription,
 	RawLiveQuerySubscription,
@@ -87,3 +87,38 @@ describe("sealed query row types", () => {
 		expectTypeOf(check).toBeFunction();
 	});
 });
+
+describe("sealed query envelope versions", () => {
+	it("accepts the legacy omitted version and version 2", () => {
+		expect(() => validateSealedQuery(sealedQuery())).not.toThrow();
+		expect(() =>
+			validateSealedQuery({ ...sealedQuery(), version: 2 }),
+		).not.toThrow();
+	});
+
+	it.each([
+		0,
+		1,
+		3,
+		"2",
+		null,
+	])("rejects unsupported version %j", (version) => {
+		expect(() =>
+			validateSealedQuery({
+				...sealedQuery(),
+				version,
+			} as unknown as SealedLiveQuery<unknown>),
+		).toThrow("Invalid sealed live query");
+	});
+});
+
+function sealedQuery(): SealedLiveQuery<unknown> {
+	const header = Buffer.from(
+		JSON.stringify({ alg: "dir", enc: "A256GCM", v: 1 }),
+	).toString("base64url");
+	return {
+		capability: `${header}..a.b.c`,
+		queryFingerprint: "11".repeat(32),
+		expiresAt: 1,
+	};
+}

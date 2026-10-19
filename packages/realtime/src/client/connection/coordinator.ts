@@ -43,7 +43,7 @@ export interface ConnectionCallbacks {
 	readonly reconciliation: ReconciliationTarget;
 	admitted(columns: readonly WireColumn[]): void;
 	connecting(): void;
-	queryUnavailable(): void;
+	queryUnavailable(error: ConnectionCoordinatorError): void;
 	failed(error: ConnectionCoordinatorError): void;
 }
 
@@ -57,6 +57,10 @@ export interface ConnectionCoordinatorOptions {
 
 export interface ConnectionHandle {
 	renew(query: ConnectionSealedQuery): Promise<void>;
+	replace(
+		query: ConnectionSealedQuery,
+		callbacks: ConnectionCallbacks,
+	): ConnectionHandle;
 	fail(error: ConnectionCoordinatorError): void;
 	unsubscribe(): void;
 }
@@ -216,6 +220,14 @@ export class ConnectionCoordinator {
 		query: ConnectionSealedQuery,
 		callbacks: ConnectionCallbacks,
 	): ConnectionHandle {
+		return this.addSubscription(query, callbacks, true);
+	}
+
+	private addSubscription(
+		query: ConnectionSealedQuery,
+		callbacks: ConnectionCallbacks,
+		reportStarted: boolean,
+	): ConnectionHandle {
 		if (this.disposed) throw new Error("Realtime client is closed");
 		validateSealedQuery(query);
 		const events = callbacks.events ?? this.events.createSubscription();
@@ -233,7 +245,7 @@ export class ConnectionCoordinator {
 		);
 		this.managedSubscriptions.add(managed);
 		this.activeSubscriptions.add(managed);
-		managed.events.started();
+		if (reportStarted) managed.events.started();
 		if (this.terminalConnection) {
 			this.failSubscription(managed, this.terminalConnection);
 		} else {
@@ -243,6 +255,28 @@ export class ConnectionCoordinator {
 		return Object.freeze({
 			renew: (replacement: ConnectionSealedQuery) =>
 				this.renew(managed, replacement),
+			replace: (
+				replacement: ConnectionSealedQuery,
+				replacementCallbacks: ConnectionCallbacks,
+			) => {
+				if (managed.state === "closed") {
+					throw new Error("Live-query subscription is closed");
+				}
+				if (managed.state === "failed" || this.terminalConnection) {
+					throw new ConnectionCoordinatorError(
+						"connection_lost",
+						false,
+						"Realtime connection cannot recover",
+					);
+				}
+				const handle = this.addSubscription(
+					replacement,
+					replacementCallbacks,
+					false,
+				);
+				this.unsubscribe(managed, false);
+				return handle;
+			},
 			fail: (error: ConnectionCoordinatorError) =>
 				this.failLocalSubscription(managed, error),
 			unsubscribe: () => this.unsubscribe(managed),
@@ -314,13 +348,16 @@ export class ConnectionCoordinator {
 		return renewal.promise;
 	}
 
-	private unsubscribe(subscription: ManagedSubscription): void {
+	private unsubscribe(
+		subscription: ManagedSubscription,
+		reportUnsubscribed = true,
+	): void {
 		if (subscription.state === "closed") return;
 		subscription.recovery.cancel();
 		subscription.state = "closed";
 		this.managedSubscriptions.delete(subscription);
 		this.activeSubscriptions.delete(subscription);
-		subscription.events.unsubscribed();
+		if (reportUnsubscribed) subscription.events.unsubscribed();
 		this.rejectRenewals(
 			subscription,
 			new Error("Live-query subscription is closed"),
@@ -884,7 +921,7 @@ export class ConnectionCoordinator {
 		}
 		subscription.resetWire();
 		subscription.events.queryUnavailable(error);
-		subscription.callbacks.queryUnavailable();
+		subscription.callbacks.queryUnavailable(error);
 
 		if (
 			rejectedCapability !== undefined &&
