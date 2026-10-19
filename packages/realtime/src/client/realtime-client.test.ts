@@ -1150,12 +1150,17 @@ describe("RealtimeClient", () => {
 		client.close();
 	});
 
-	it("replaces the internal subscription across envelope versions", async () => {
+	it("replaces the internal subscription from legacy v1 to envelope v2", async () => {
 		useFakeWebSocket();
 		const client = createRealtimeClient({
 			url: "ws://live.test/v1",
 		});
-		const subscription = client.subscribe(query("initial"));
+		const legacyV1Query = query("initial"); // An omitted version is legacy v1.
+		const version2Query = {
+			...query("replacement", "22".repeat(32)),
+			version: 2,
+		};
+		const subscription = client.subscribe(legacyV1Query);
 		const socket = connectAndAdmit();
 		baselineSync(socket, "before");
 		const states: string[] = [];
@@ -1168,9 +1173,7 @@ describe("RealtimeClient", () => {
 		const transaction = subscription.awaitTxId("42").then(() => {
 			transactionSeen = true;
 		});
-		const replacement = query("replacement", "22".repeat(32), 2);
-
-		const renewal = subscription.renew(replacement);
+		const renewal = subscription.renew(version2Query);
 
 		expect(subscription.getSnapshot()).toEqual({
 			status: "connecting",
@@ -1182,7 +1185,7 @@ describe("RealtimeClient", () => {
 			{
 				type: "subscribe",
 				request_id: "2",
-				authorization: replacement.capability,
+				authorization: version2Query.capability,
 			},
 		]);
 		socket.receive({
@@ -1221,27 +1224,36 @@ describe("RealtimeClient", () => {
 			[{ rowId: ROW_KEY, row: { id: 1, title: "after" } }],
 		]);
 		expect(transactionSeen).toBe(true);
-		await expect(
-			subscription.renew(query("other", "33".repeat(32), 2)),
-		).rejects.toThrow("same query");
+		const otherVersion2Query = {
+			...query("other", "33".repeat(32)),
+			version: 2,
+		};
+		await expect(subscription.renew(otherVersion2Query)).rejects.toThrow(
+			"same query",
+		);
 		client.close();
 	});
 
-	it("replaces a raw subscription across future envelope versions", async () => {
+	it("replaces a raw subscription from envelope v2 to future v3", async () => {
 		useFakeWebSocket();
 		const client = createRealtimeClient({ url: "ws://live.test/v1" });
-		const subscription = client.subscribe(
-			query("initial", "22".repeat(32), 2),
-			{ materialize: false },
-		);
+		const version2Query = {
+			...query("initial", "22".repeat(32)),
+			version: 2,
+		};
+		const version3Query = {
+			...query("replacement", "33".repeat(32)),
+			version: 3,
+		};
+		const subscription = client.subscribe(version2Query, {
+			materialize: false,
+		});
 		const updates: unknown[] = [];
 		subscription.onUpdate((update) => updates.push(update));
 		const socket = connectAndAdmit();
 		baselineSync(socket, "before");
 
-		const renewal = subscription.renew(
-			query("replacement", "33".repeat(32), 3),
-		);
+		const renewal = subscription.renew(version3Query);
 		socket.receive({
 			type: "subscribed",
 			request_id: "2",
@@ -1274,19 +1286,22 @@ describe("RealtimeClient", () => {
 		client.close();
 	});
 
-	it("allows reentrant unsubscribe while replacing an envelope version", async () => {
+	it("allows reentrant unsubscribe while replacing legacy v1 with envelope v2", async () => {
 		useFakeWebSocket();
 		const client = createRealtimeClient({ url: "ws://live.test/v1" });
-		const subscription = client.subscribe(query("initial"));
+		const legacyV1Query = query("initial"); // An omitted version is legacy v1.
+		const version2Query = {
+			...query("replacement", "22".repeat(32)),
+			version: 2,
+		};
+		const subscription = client.subscribe(legacyV1Query);
 		const socket = connectAndAdmit();
 		baselineSync(socket, "before");
 		subscription.onStateChange((state) => {
 			if (state.status === "connecting") subscription.unsubscribe();
 		});
 
-		const renewal = subscription.renew(
-			query("replacement", "22".repeat(32), 2),
-		);
+		const renewal = subscription.renew(version2Query);
 
 		await expect(renewal).rejects.toThrow("subscription is closed");
 		expect(subscription.getState().status).toBe("closed");
@@ -1750,10 +1765,8 @@ function publication(
 function query(
 	capabilityId: string,
 	queryFingerprint = QUERY_FINGERPRINT,
-	version?: number,
 ): SealedLiveQuery<MessageRow> {
 	return {
-		...(version === undefined ? {} : { version }),
 		capability: compactJwe(capabilityId),
 		queryFingerprint,
 		expiresAt: Date.now() + 60_000,
