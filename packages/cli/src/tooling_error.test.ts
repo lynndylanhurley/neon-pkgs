@@ -5,6 +5,7 @@ import { CannotMintApiKeyError } from "./mcp/mint.js";
 import {
 	attachToolingContext,
 	classifyToolingError,
+	mergeToolingContexts,
 	sanitizeErrorDetail,
 	tagToolingStep,
 	toolingContextOf,
@@ -42,6 +43,32 @@ describe("classifyToolingError", () => {
 				undefined,
 			),
 		).toBe("unknown");
+	});
+
+	it("reads a child killed by a signal as a failed child, not unknown", () => {
+		expect(
+			classifyToolingError(new Error("skills CLI failed."), {
+				signal: "SIGKILL",
+			}),
+		).toBe("child_failed");
+	});
+
+	it("does not read the words 'forbidden' or 'timed out' on their own as a cause", () => {
+		expect(
+			classifyToolingError(
+				new Error("that name is forbidden here"),
+				undefined,
+			),
+		).toBe("unknown");
+		expect(
+			classifyToolingError(new Error("the session timed out"), undefined),
+		).toBe("unknown");
+		expect(
+			classifyToolingError(
+				new Error("Command timed out after 120000 milliseconds"),
+				undefined,
+			),
+		).toBe("timeout");
 	});
 
 	it("reads a timed out child as a timeout, whatever it printed", () => {
@@ -172,6 +199,31 @@ describe("sanitizeErrorDetail", () => {
 		);
 	});
 
+	it("redacts a secret passed as a flag or written with spaces", () => {
+		const out = sanitizeErrorDetail(
+			[
+				"npx skills add --token abc123 --password=hunter2 --api-key 'k e y'",
+				"password: my secret pass",
+			].join("\n"),
+		);
+		expect(out).not.toMatch(/abc123|hunter2|k e y|my secret pass/);
+	});
+
+	it("takes the same short time however much a child printed", () => {
+		// Sized so the unbounded version fails in seconds instead of hanging the suite.
+		for (const text of [
+			"a".repeat(60_000),
+			"token".repeat(12_000),
+			"--token ".repeat(7_500),
+			`${" ".repeat(60_000)}x`,
+			"password=".repeat(6_600),
+		]) {
+			const started = performance.now();
+			sanitizeErrorDetail(text);
+			expect(performance.now() - started).toBeLessThan(500);
+		}
+	});
+
 	it("leaves a path that only shares a prefix with the working directory alone", () => {
 		const cwd = process.cwd();
 		const out = sanitizeErrorDetail(`${cwd}-old/x and ${cwd}/y`);
@@ -259,6 +311,28 @@ describe("toolingErrorProperties", () => {
 		expect(stack.length).toBeLessThanOrEqual(2001);
 	});
 
+	it("builds the stack from the sanitized message, whatever the original stack held", () => {
+		const error = new Error("secret message token=abc123");
+		attachToolingContext(error, { step: "skills" });
+		error.stack = "something unrelated\n    at fn (file.ts:1:1)";
+		const stack = String(toolingErrorProperties(error, "skills")?.stack);
+		expect(stack).toBe(
+			"Error: secret message token=<redacted>\n    at fn (file.ts:1:1)",
+		);
+	});
+
+	it("reports the reason of every failure behind one error", () => {
+		const error = new Error("boom");
+		attachToolingContext(error, {
+			step: "skills",
+			errorKinds: ["timeout", "permission_denied"],
+		});
+		expect(toolingErrorProperties(error, "skills")?.errorKinds).toEqual([
+			"timeout",
+			"permission_denied",
+		]);
+	});
+
 	it("drops the retry command so it can't push the cause out of the bound", () => {
 		const error = new Error(
 			`skills CLI failed:\nnpm error code E403\nRetry with: neon skills ${"--skill x ".repeat(200)}`,
@@ -279,5 +353,31 @@ describe("toolingErrorProperties", () => {
 		const properties = toolingErrorProperties(error, "skills");
 		expect(properties?.skills).toEqual(["neon", "ok_1"]);
 		expect(properties?.agents).toEqual(["cursor"]);
+	});
+});
+
+describe("mergeToolingContexts", () => {
+	it("takes each field from the first context that has it", () => {
+		expect(
+			mergeToolingContexts([
+				undefined,
+				{ exitCode: 1, signal: "SIGTERM" },
+				{ exitCode: 2, detail: "later" },
+			]),
+		).toEqual({ exitCode: 1, signal: "SIGTERM", detail: "later" });
+	});
+
+	it("says timed out if any did", () => {
+		expect(
+			mergeToolingContexts([{ timedOut: false }, { timedOut: true }])
+				.timedOut,
+		).toBe(true);
+		expect(mergeToolingContexts([{ timedOut: false }]).timedOut).toBe(
+			false,
+		);
+	});
+
+	it("is empty when nothing is known", () => {
+		expect(mergeToolingContexts([undefined, undefined])).toEqual({});
 	});
 });

@@ -453,12 +453,12 @@ export const getErrorAnalyticsEventProperties = (
 
 	return {
 		...base,
+		...tooling,
 		message: redactCredentialTokenIds(String(message)),
 		stack: stack ? redactCredentialTokenIds(String(stack)) : undefined,
 		errCode,
 		statusCode: apiError?.status,
 		requestId,
-		...tooling,
 	};
 };
 

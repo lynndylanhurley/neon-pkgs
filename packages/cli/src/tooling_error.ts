@@ -34,6 +34,8 @@ export type ToolingErrorContext = {
 	signal?: string;
 	/** Extra text to classify and report, for failures whose message doesn't carry the cause. */
 	detail?: string;
+	/** The reason of every failure behind an error that stands for several (`errorKind` is the first). */
+	errorKinds?: readonly ToolingErrorKind[];
 	/** Joins the error to the `cli_init_start` / `cli_init_end` events of the same run. */
 	initRunId?: string;
 };
@@ -88,6 +90,23 @@ export const withToolingStep = async <T>(
 	}
 };
 
+/**
+ * One context for an error that stands for several failures: for each field the first failure
+ * that has it wins, except that the error timed out if any of them did.
+ */
+export const mergeToolingContexts = (
+	contexts: readonly (ToolingErrorContext | undefined)[],
+): ToolingErrorContext => {
+	const merged: ToolingErrorContext = Object.assign(
+		{},
+		...[...contexts].reverse(),
+	);
+	if (contexts.some((context) => context?.timedOut === true)) {
+		merged.timedOut = true;
+	}
+	return merged;
+};
+
 const messageOf = (error: unknown): string =>
 	error instanceof Error ? error.message : String(error);
 
@@ -109,13 +128,16 @@ export const classifyToolingError = (
 	if (/needs npx|npx: command not found/i.test(text)) {
 		return "node_missing";
 	}
-	if (context?.timedOut === true || /timed out|ETIMEDOUT/i.test(text)) {
+	if (
+		context?.timedOut === true ||
+		/\bETIMEDOUT\b|\btimed out after\b/i.test(text)
+	) {
 		return "timeout";
 	}
 	if (/EACCES|EPERM|permission denied|operation not permitted/i.test(text)) {
 		return "permission_denied";
 	}
-	if (/\bE403\b|\b403\s+Forbidden\b|\bHTTP\s*403\b|forbidden/i.test(text)) {
+	if (/\bE403\b|\b403\s+Forbidden\b|\bHTTP\s*403\b/i.test(text)) {
 		return "registry_blocked";
 	}
 	if (
@@ -129,7 +151,8 @@ export const classifyToolingError = (
 	) {
 		return "invalid_config";
 	}
-	if (context?.exitCode !== undefined) {
+	// A child killed by a signal has no exit code.
+	if (context?.exitCode !== undefined || context?.signal !== undefined) {
 		return "child_failed";
 	}
 	return "unknown";
@@ -137,11 +160,24 @@ export const classifyToolingError = (
 
 const DETAIL_MAX = 500;
 const STACK_MAX = 2000;
+const MAX_FRAMES = 40;
+/** How much is read before redacting, so the cost doesn't grow with the size of a child's output. */
+const INPUT_MAX = DETAIL_MAX * 8;
 const ESC = String.fromCharCode(27);
 const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[ -/]*[@-~]`, "g");
 
 const escapeRegExp = (text: string): string =>
 	text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The last `max` characters, starting at a word so a secret isn't cut into a fragment. */
+const tailOf = (text: string, max: number): string => {
+	if (text.length <= max) {
+		return text;
+	}
+	const tail = text.slice(-max);
+	const word = tail.search(/\s/);
+	return word > 0 ? tail.slice(word) : tail;
+};
 
 /** The ways `path` can show up in text: as given, with either slash, and fully resolved. */
 const pathForms = (path: string): string[] => {
@@ -158,32 +194,62 @@ const pathForms = (path: string): string[] => {
 	return [...forms].filter((form) => form.length > 1);
 };
 
+let scrubTargets: { key: string; targets: [RegExp, string][] } | undefined;
+
+/** What to replace, built once per working and home directory instead of on every error. */
+const getScrubTargets = (): [RegExp, string][] => {
+	const cwd = process.cwd();
+	const home = homedir();
+	const key = `${cwd}\0${home}`;
+	if (scrubTargets?.key !== key) {
+		const targets: [RegExp, string][] = [];
+		for (const [path, replacement] of [
+			[cwd, "."],
+			[home, "~"],
+		] as const) {
+			for (const form of pathForms(path).sort(
+				(a, b) => b.length - a.length,
+			)) {
+				// Not followed by a name character, so `/work/app` leaves `/work/app-old` alone.
+				targets.push([
+					new RegExp(
+						`${escapeRegExp(form)}(?![\\w-])`,
+						process.platform === "win32" ? "gi" : "g",
+					),
+					replacement,
+				]);
+			}
+		}
+		scrubTargets = { key, targets };
+	}
+	return scrubTargets.targets;
+};
+
 /** Replaces the working directory with `.` and the home directory with `~`. */
 const scrubPaths = (text: string): string => {
 	let out = text;
-	for (const [path, replacement] of [
-		[process.cwd(), "."],
-		[homedir(), "~"],
-	] as const) {
-		for (const form of pathForms(path).sort(
-			(a, b) => b.length - a.length,
-		)) {
-			// Not followed by a name character, so `/work/app` leaves `/work/app-old` alone.
-			out = out.replace(
-				new RegExp(
-					`${escapeRegExp(form)}(?![\\w-])`,
-					process.platform === "win32" ? "gi" : "g",
-				),
-				replacement,
-			);
-		}
+	for (const [pattern, replacement] of getScrubTargets()) {
+		out = out.replace(pattern, replacement);
 	}
 	return out;
 };
 
-const SECRET_KEY = "[\\w.-]*(?:token|secret|passw(?:or)?d|api[_-]?key)[\\w.-]*";
-const SECRET_ASSIGNMENT = new RegExp(
-	`(${SECRET_KEY}["']?\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s"',;]+)`,
+// Each pattern starts at its keyword rather than at a run of name characters before it, so
+// the cost of a long unbroken run stays linear.
+const SECRET_WORD = "(?:token|secret|passw(?:or)?d|api[_-]?key)";
+const VALUE = `"[^"]*"|'[^']*'|`;
+/** A password or secret is taken to the end of the line: it may well contain spaces. */
+const LINE_SECRET = new RegExp(
+	`((?:secret|passw(?:or)?d)[\\w.-]*["']?\\s*[=:]\\s*)(${VALUE}[^\\n"']+)`,
+	"gi",
+);
+const WORD_SECRET = new RegExp(
+	`(${SECRET_WORD}[\\w.-]*["']?\\s*[=:]\\s*)(${VALUE}[^\\s"',;]+)`,
+	"gi",
+);
+/** `--token abc`, `--password=abc`: the secret is the argument that follows. */
+const FLAG_SECRET = new RegExp(
+	`(--[\\w-]*${SECRET_WORD}[\\w-]*(?:\\s+|=))(${VALUE}\\S+)`,
 	"gi",
 );
 
@@ -194,36 +260,46 @@ const redactSecrets = (text: string): string =>
 		.replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/g, "<redacted>")
 		.replace(/\bnpm_[A-Za-z0-9]{20,}/g, "<redacted>")
 		.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 <redacted>")
-		.replace(SECRET_ASSIGNMENT, "$1<redacted>");
+		.replace(FLAG_SECRET, "$1<redacted>")
+		.replace(LINE_SECRET, "$1<redacted>")
+		.replace(WORD_SECRET, "$1<redacted>");
 
 /**
  * Makes error text safe and small enough to send: no colour codes, no home directory or
  * working directory, no credentials, and at most the last {@link DETAIL_MAX} characters, which
- * is where a failed child process puts the cause (the start is progress output).
+ * is where a failed child process puts the cause (the start is progress output). Only the end
+ * of the text is looked at, so a very large child output costs no more than a small one.
  *
  * Exported for tests.
  */
 export const sanitizeErrorDetail = (text: string): string => {
-	const out = redactSecrets(scrubPaths(text.replace(ANSI, ""))).trim();
+	const out = redactSecrets(
+		scrubPaths(tailOf(text, INPUT_MAX).replace(ANSI, "")),
+	).trim();
 	return out.length > DETAIL_MAX ? `…${out.slice(-DETAIL_MAX)}` : out;
 };
 
 /**
- * The stack with `message` swapped for its sanitized form, the same scrubbing applied to the
- * frames (whose paths carry the user's directories), and the same kind of bound.
+ * A stack made of the error's name, its sanitized message and its first stack frames, with the
+ * same scrubbing applied to the frames (whose paths carry the user's directories) and a bound.
+ * It is built rather than edited, so no part of the original message can survive in it.
  */
 const sanitizeStack = (
+	name: string,
 	stack: string,
-	message: string,
 	sanitizedMessage: string,
 ): string => {
-	// A replacer function, because the sanitized text may contain `$&` and the like.
-	const swapped =
-		message.length > 0 && stack.includes(message)
-			? stack.replace(message, () => sanitizedMessage)
-			: stack;
-	const out = redactSecrets(scrubPaths(swapped.replace(ANSI, "")));
-	return out.length > STACK_MAX ? `${out.slice(0, STACK_MAX)}…` : out;
+	const frames = stack
+		.split("\n")
+		.filter((line) => /^\s+at /.test(line))
+		.slice(0, MAX_FRAMES)
+		.join("\n");
+	const head = `${name}: ${sanitizedMessage}`;
+	const full =
+		frames.length === 0
+			? head
+			: `${head}\n${redactSecrets(scrubPaths(frames.replace(ANSI, "")))}`;
+	return full.length > STACK_MAX ? `${full.slice(0, STACK_MAX)}…` : full;
 };
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -257,10 +333,11 @@ export const toolingErrorProperties = (
 		stack:
 			error.stack === undefined
 				? undefined
-				: sanitizeStack(error.stack, error.message, message),
+				: sanitizeStack(error.name, error.stack, message),
 		command,
 		step: context.step,
 		errorKind: classifyToolingError(error, context),
+		errorKinds: context.errorKinds,
 		agents: safeIds(context.agents),
 		skills: safeIds(context.skills),
 		scope: context.scope,

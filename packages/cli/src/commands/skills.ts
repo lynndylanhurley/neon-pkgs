@@ -23,6 +23,8 @@ import {
 import { confirmSkillsUpdate } from "../skills/wizard.js";
 import {
 	attachToolingContext,
+	classifyToolingError,
+	mergeToolingContexts,
 	toolingContextOf,
 	withToolingStep,
 } from "../tooling_error.js";
@@ -328,7 +330,23 @@ export const skillsInstallError = (
 	const failure = (message: string): Error => {
 		const error = new Error(message);
 		attachToolingContext(error, {
-			...toolingContextOf(first?.cause),
+			// What the child processes reported (the first failure's, unless only a later one has it).
+			...mergeToolingContexts(
+				failed.map((row) => toolingContextOf(row.cause)),
+			),
+			// One reason per failure, since they need not share one.
+			errorKinds: [
+				...new Set(
+					failed.map((row) =>
+						classifyToolingError(
+							row.cause instanceof Error
+								? row.cause
+								: new Error(row.message),
+							toolingContextOf(row.cause),
+						),
+					),
+				),
+			],
 			step: "skills",
 			skills: failed.flatMap((row) => row.skills),
 			agents,

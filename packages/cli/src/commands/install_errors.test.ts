@@ -50,6 +50,45 @@ describe("skillsInstallError", () => {
 			scope: "project",
 			exitCode: 1,
 			timedOut: false,
+			errorKinds: ["child_failed"],
+		});
+	});
+
+	it("reports every reason when the failures differ, and a timeout if any timed out", () => {
+		const timedOut = new Error("skills CLI failed");
+		attachToolingContext(timedOut, { timedOut: true, signal: "SIGTERM" });
+		const denied = new Error("EACCES: permission denied, mkdir");
+		attachToolingContext(denied, { exitCode: 1 });
+		const failure = (cause: Error, skill: string) => ({
+			label: skill,
+			message: cause.message,
+			skills: [skill],
+			cause,
+		});
+
+		const error = skillsInstallError(
+			outcome(undefined, {
+				rows: [
+					{ scope: "s", skills: "a", agents: "x", status: "failed" },
+					{ scope: "s", skills: "b", agents: "x", status: "failed" },
+					{
+						scope: "s",
+						skills: "c",
+						agents: "x",
+						status: "installed",
+					},
+				],
+				failed: [failure(timedOut, "a"), failure(denied, "b")],
+			}),
+		);
+
+		expect(toolingContextOf(error)).toMatchObject({
+			errorKinds: ["timeout", "permission_denied"],
+			timedOut: true,
+			// Each field comes from the first failure that has it.
+			signal: "SIGTERM",
+			exitCode: 1,
+			skills: ["a", "b"],
 		});
 	});
 
