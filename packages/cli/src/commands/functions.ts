@@ -157,7 +157,7 @@ export const builder = (argv: yargs.Argv) =>
 					.strict()
 					.positional("template", {
 						describe:
-							"Template ID (run `neon functions templates list` to see them)",
+							"Template ID. Omit it in a terminal to pick one; `neon functions templates list` shows them all.",
 						type: "string",
 					})
 					.options({
@@ -182,7 +182,7 @@ export const builder = (argv: yargs.Argv) =>
 						yes: {
 							alias: ["y", "default"],
 							describe:
-								"Skip prompts and use the recommended operations",
+								"Skip prompts: use the recommended operations and install dependencies",
 							type: "boolean",
 						},
 						dir: {
@@ -197,7 +197,7 @@ export const builder = (argv: yargs.Argv) =>
 						},
 						install: {
 							describe:
-								"Install the template's dependencies. A TTY asks when omitted.",
+								"Install the template's dependencies, plus @neon/config and @neon/env when neon.ts is created. A TTY asks when omitted, --yes installs, and anything else leaves the install command in Next.",
 							type: "boolean",
 						},
 						"add-to-config": {

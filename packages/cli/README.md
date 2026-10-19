@@ -1044,10 +1044,13 @@ All sub-commands honor the [global options](#global-options), including `--outpu
 
 ```bash
 neon functions templates list
+neon functions new
 neon functions new basic
 neon functions new basic --name hello --no-add-to-config
 neon functions new <template> --operation <id> --operation <id> --install
 ```
+
+Without a template, a terminal asks which one to use; anything else exits with the available IDs. Like `bootstrap`, it asks once whether to install the template's dependencies (plus `@neon/config` and `@neon/env` when it creates `neon.ts`): `--yes` installs, `--no-install` skips, and a run without a terminal leaves the install command under `Next:`.
 
 A template's `layout` decides what you get. `router` writes one module per operation plus a generated `index.ts` that dispatches on the URL path, and declares one function. `separate` declares each operation as its own function under the slug the template gives it. Without `--operation` or `--all-operations`, a TTY asks which operations to include and anything else uses the template's recommended ones.
 

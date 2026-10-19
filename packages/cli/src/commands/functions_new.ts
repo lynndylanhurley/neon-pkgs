@@ -23,6 +23,11 @@ import {
 	openRegistry,
 	type Registry,
 } from "../functions/source.js";
+import {
+	formatInitDone,
+	type InitDoneRow,
+	printInitDone,
+} from "../init/chrome.js";
 import { log } from "../log.js";
 import { projectConfigPath, projectDir } from "../project.js";
 import type { BranchScopeProps } from "../types.js";
@@ -30,6 +35,7 @@ import { getCliName } from "../utils/cli_name.js";
 import { deriveFunctionSlug } from "../utils/function_slug.js";
 import {
 	installArgs,
+	type PackageManager,
 	resolvePackageManager,
 	runCommand,
 } from "../utils/package_manager.js";
@@ -87,6 +93,7 @@ export type ScaffoldFromTemplateResult =
 	| {
 			cancelled: false;
 			template: string;
+			title: string;
 			provider: string;
 			layout: TemplateLayout;
 			operations: string[];
@@ -99,10 +106,16 @@ export type ScaffoldFromTemplateResult =
 				changes: string[];
 			};
 			dependencies: string[];
+			/** Everything the install step covers: missing config packages, then `dependencies`. */
+			packages: string[];
+			packageManager: PackageManager;
 			installed: boolean;
+			install: "installed" | "failed" | "skipped";
 			environment: string[];
 			envExample?: { path: string; added: string[] };
 			nextSteps: string[];
+			/** Short command-first lines for the human summary's `Next:` block. */
+			next: string[];
 	  };
 
 export type NewFunctionProps = OutputProps &
@@ -269,31 +282,29 @@ export const scaffoldFromTemplate = async (
 	if (envExample.contents !== undefined) {
 		writeFileSync(envExample.path, envExample.contents);
 	}
-	if (registration?.created) {
-		await ensureConfigPackages(projectRoot, {
-			...(options.install !== undefined
-				? { install: options.install }
-				: {}),
-			...(options.run ? { run: options.run } : {}),
-			silent: true,
-		});
-	}
-
 	const { dependencies } = template;
 	const pm = resolvePackageManager(projectRoot);
 	const installHint = (packages: readonly string[]) =>
 		installCommandFrom(projectRoot, pm, packages);
+	const configPackages = registration?.created
+		? missingDependencies(projectRoot)
+		: [];
+	const packages = [...configPackages, ...dependencies];
 	let install = options.install === true;
-	if (
-		options.install === undefined &&
-		dependencies.length > 0 &&
-		interactive
-	) {
+	if (options.install === undefined && packages.length > 0 && interactive) {
 		install =
 			(await confirm(
-				`Install ${dependencies.join(", ")} with ${pm}?`,
+				`Install ${packages.join(", ")} with ${pm}?`,
 				true,
 			)) === true;
+	}
+	if (configPackages.length > 0) {
+		await ensureConfigPackages(projectRoot, {
+			install,
+			packageManager: pm,
+			...(options.run ? { run: options.run } : {}),
+			silent: true,
+		});
 	}
 	let installed = false;
 	if (install && dependencies.length > 0) {
@@ -319,6 +330,7 @@ export const scaffoldFromTemplate = async (
 		source: displayPath(join(targetDir, fn.file), cwd),
 	}));
 	const nextSteps: string[] = [];
+	const next: string[] = [];
 	const missingConfig = registration?.created
 		? missingDependencies(projectRoot)
 		: [];
@@ -326,24 +338,31 @@ export const scaffoldFromTemplate = async (
 		nextSteps.push(
 			`Install the Neon config packages: \`${installHint(missingConfig)}\``,
 		);
+		next.push(installHint(missingConfig));
 	}
 	if (dependencies.length > 0 && !installed) {
 		nextSteps.push(
 			`Install the template's dependencies: \`${installHint(dependencies)}\``,
 		);
+		next.push(installHint(dependencies));
 	}
 	const environment = template.environment.map(({ name }) => name);
 	const variables = template.environment
 		.map((variable) => `${variable.name} (${variable.description})`)
 		.join(", ");
 	const envFile = displayPath(resolveEnvFilePath(location), cwd);
+	const names = environment.join(", ");
 	if (variables && register) {
 		const them = environment.length === 1 ? "it" : "them";
 		nextSteps.push(
 			`Set ${variables} in ${envFile}. \`${cli} dev\` reads ${them} from your shell, so export ${them} there too.`,
 		);
+		next.push(
+			`Set ${names} in ${envFile}, and export ${them} for ${cli} dev`,
+		);
 	} else if (variables) {
 		nextSteps.push(`Set ${variables} in your shell.`);
+		next.push(`Set ${names} in your shell`);
 	}
 	if (plan.routes) {
 		nextSteps.push(
@@ -356,6 +375,7 @@ export const scaffoldFromTemplate = async (
 		nextSteps.push(
 			`Next: \`${cli} dev${flag}\` to run it locally, \`${cli} config apply${flag}${envFlag}\` to deploy.`,
 		);
+		next.push(`${cli} dev${flag}`, `${cli} config apply${flag}${envFlag}`);
 	} else {
 		const envFlags = environment
 			.map((name) => ` --env ${name}=<value>`)
@@ -364,12 +384,17 @@ export const scaffoldFromTemplate = async (
 			nextSteps.push(
 				`Next: \`${cli} dev --source ${fn.source}\` to run ${fn.slug} locally, \`${cli} functions deploy ${fn.slug} --src ${fn.source}${envFlags}\` to deploy.`,
 			);
+			next.push(
+				`${cli} dev --source ${fn.source}`,
+				`${cli} functions deploy ${fn.slug} --src ${fn.source}${envFlags}`,
+			);
 		}
 	}
 
 	return {
 		cancelled: false,
 		template: template.id,
+		title: template.title,
 		provider,
 		layout: plan.layout,
 		operations: operations.map(({ id }) => id),
@@ -386,7 +411,16 @@ export const scaffoldFromTemplate = async (
 				}
 			: {}),
 		dependencies: [...dependencies],
+		packages,
+		packageManager: pm,
 		installed,
+		install:
+			packages.length === 0 || !install
+				? "skipped"
+				: missingConfig.length > 0 ||
+						(dependencies.length > 0 && !installed)
+					? "failed"
+					: "installed",
 		environment,
 		...(envExample.added.length > 0
 			? {
@@ -397,33 +431,123 @@ export const scaffoldFromTemplate = async (
 				}
 			: {}),
 		nextSteps,
+		next,
 	};
 };
 
+type ScaffoldedTemplate = Extract<
+	ScaffoldFromTemplateResult,
+	{ cancelled: false }
+>;
+
+export const formatNewFunctionDone = (result: ScaffoldedTemplate): string => {
+	const plural = result.functions.length !== 1;
+	const rows: InitDoneRow[] = [
+		{ label: "Template", value: `${result.title} (${result.provider})` },
+		{
+			label: plural ? "Functions" : "Function",
+			value: result.functions.map(({ slug }) => slug).join(", "),
+		},
+		{ label: "Directory", value: result.directory },
+	];
+	if (result.routes) {
+		rows.push({
+			label: "Routes",
+			value: `${result.routes.join(", ")} (other paths return 404)`,
+		});
+	}
+	rows.push({
+		label: "Config",
+		value: result.config
+			? `${result.config.path} ${result.config.action}: ${result.config.changes.join(", ")}`
+			: "not added",
+	});
+	if (result.packages.length > 0) {
+		rows.push({
+			label: "Dependencies",
+			value:
+				result.install === "failed"
+					? "install failed"
+					: result.install === "installed"
+						? `installed with ${result.packageManager}`
+						: "not installed",
+		});
+	}
+	if (result.envExample) {
+		rows.push({
+			label: "Env",
+			value: `${result.envExample.added.join(", ")} added to ${result.envExample.path}`,
+		});
+	} else if (result.environment.length > 0) {
+		rows.push({ label: "Env", value: result.environment.join(", ") });
+	}
+	return formatInitDone({
+		heading:
+			result.install === "failed"
+				? "Setup did not finish."
+				: plural
+					? "Functions created."
+					: "Function created.",
+		rows,
+		next: result.next,
+	});
+};
+
+const pickTemplate = async (
+	entries: readonly RegistryIndexEntry[],
+): Promise<string | undefined> => {
+	const answer = await prompts({
+		type: "select",
+		name: "value",
+		message: "Which template would you like to use?",
+		choices: entries.map((entry) => ({
+			title: `${entry.title} (${providerOf(entry)})`,
+			description: entry.description,
+			value: entry.id,
+		})),
+		initial: 0,
+	});
+	return typeof answer.value === "string" ? answer.value : undefined;
+};
+
 export const handleNew = async (props: NewFunctionProps): Promise<void> => {
-	if (props.template === undefined) {
-		await listTemplates(props);
-		if (!structured(props)) {
-			log.info(
-				"Create one with: `%s functions new <template>`",
-				getCliName(),
+	const interactive =
+		props.yes !== true && !structured(props) && isInteractiveTerminal();
+	const registry = await openRegistry();
+	let template = props.template;
+	if (template === undefined) {
+		if (!interactive) {
+			throw new Error(
+				`No template selected. Re-run in an interactive terminal to pick one, or pass a template ID. Available templates: ${registry.entries
+					.map((entry) => entry.id)
+					.join(", ")}.`,
 			);
 		}
-		return;
+		template = await pickTemplate(registry.entries);
+		if (template === undefined) {
+			log.info("Cancelled; no files were changed.");
+			return;
+		}
+	}
+	if (!structured(props)) {
+		log.info(
+			'Fetching template "%s" from the Function Registry…',
+			template,
+		);
 	}
 	const result = await scaffoldFromTemplate({
-		template: props.template,
+		template,
 		name: props.name,
 		operations: props.operation,
 		allOperations: props.allOperations,
 		dir: props.dir,
 		force: props.force,
-		install: props.install,
+		install: props.install ?? (props.yes === true ? true : undefined),
 		addToConfig: props.addToConfig,
 		config: props.config,
 		contextFile: props.contextFile,
-		interactive:
-			props.yes !== true && !structured(props) && isInteractiveTerminal(),
+		registry,
+		interactive,
 	});
 	if (result.cancelled) {
 		log.info("Cancelled; no files were changed.");
@@ -453,29 +577,5 @@ export const handleNew = async (props: NewFunctionProps): Promise<void> => {
 		return;
 	}
 
-	log.info(
-		"Created %s from the %s template by %s in %s.",
-		result.functions.length === 1
-			? `function ${result.functions[0]?.slug}`
-			: `${result.functions.length} functions`,
-		result.template,
-		result.provider,
-		result.directory,
-	);
-	if (result.config) {
-		log.info(
-			"%s %s: %s.",
-			result.config.action === "created" ? "Created" : "Updated",
-			result.config.path,
-			result.config.changes.join(", "),
-		);
-	}
-	if (result.envExample) {
-		log.info(
-			"Added %s to %s.",
-			result.envExample.added.join(", "),
-			result.envExample.path,
-		);
-	}
-	for (const step of result.nextSteps) log.info(step);
+	printInitDone(formatNewFunctionDone(result));
 };

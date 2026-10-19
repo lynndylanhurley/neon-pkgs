@@ -15,6 +15,7 @@ import { renderNeonConfig } from "../config_template";
 import { openRegistry, type Registry } from "../functions/source";
 import { FIXTURE_REGISTRY_DIR } from "../test_utils/registry";
 import {
+	formatNewFunctionDone,
 	type ScaffoldFromTemplateOptions,
 	scaffoldFromTemplate,
 } from "./functions_new";
@@ -216,6 +217,111 @@ describe("functions new", () => {
 			/already declares hello/,
 		);
 		expect(existsSync(join(workspace, "functions"))).toBe(false);
+	});
+
+	it("summarises a scaffold in the bootstrap layout", async () => {
+		const result = await run({ template: "hello", addToConfig: false });
+		if (result.cancelled) throw new Error("unexpected cancel");
+
+		expect(formatNewFunctionDone(result)).toBe(
+			[
+				"Function created.",
+				"-----------------",
+				"",
+				"  Template   Hello (Neon)",
+				"  Function   hello",
+				"  Directory  functions/hello",
+				"  Config     not added",
+				"",
+				"Next:",
+				"  neon dev --source functions/hello/index.ts",
+				"  neon functions deploy hello --src functions/hello/index.ts",
+				"",
+			].join("\n"),
+		);
+	});
+
+	it("summarises dependencies, env and config without repeating Next:", async () => {
+		const result = await run({ template: "mailer" });
+		if (result.cancelled) throw new Error("unexpected cancel");
+		const text = formatNewFunctionDone(result);
+
+		expect(text).toMatch(/^Functions created\.\n-{18}\n/);
+		expect(text).toContain("  Functions     mailsend, mailget\n");
+		expect(text).toContain(
+			"  Config        neon.ts updated: added functions.mailsend, added functions.mailget\n",
+		);
+		expect(text).toContain("  Dependencies  not installed\n");
+		expect(text).toContain(
+			"  Env           MAILER_API_KEY added to .env.example\n",
+		);
+		expect(text.match(/Next:/g)).toHaveLength(1);
+		expect(text).not.toContain("`");
+		expect(text).toMatch(
+			/Next:\n {2}.*mailer-sdk@1\.2\.3\n {2}Set MAILER_API_KEY in \.env\.local, and export it for neon dev\n {2}neon dev\n {2}neon config apply --env \.env\.local\n$/,
+		);
+	});
+
+	it("leaves installs to Next: without a terminal, even when it creates neon.ts", async () => {
+		rmSync(join(workspace, "neon.ts"));
+		const calls: string[][] = [];
+		const result = await run({
+			template: "hello",
+			install: undefined,
+			run: async (_pm, args) => {
+				calls.push(args);
+				return true;
+			},
+		});
+		if (result.cancelled) throw new Error("unexpected cancel");
+
+		expect(calls).toEqual([]);
+		expect(result.install).toBe("skipped");
+		expect(result.next[0]).toMatch(/@neon\/config @neon\/env$/);
+		expect(formatNewFunctionDone(result)).toContain(
+			"  Dependencies  not installed\n",
+		);
+	});
+
+	it("installs the config packages and the template's dependencies when asked", async () => {
+		rmSync(join(workspace, "neon.ts"));
+		const calls: string[][] = [];
+		const result = await run({
+			template: "mailer",
+			operations: ["send"],
+			install: true,
+			run: async (_pm, args) => {
+				calls.push(args);
+				writeFileSync(
+					join(workspace, "package.json"),
+					JSON.stringify({
+						dependencies: { "@neon/config": "*", "@neon/env": "*" },
+					}),
+				);
+				return true;
+			},
+		});
+		if (result.cancelled) throw new Error("unexpected cancel");
+
+		expect(calls.flat()).toEqual(
+			expect.arrayContaining([
+				"@neon/config",
+				"@neon/env",
+				"mailer-sdk@1.2.3",
+			]),
+		);
+		expect(result.install).toBe("installed");
+		expect(result.packages).toEqual([
+			"@neon/config",
+			"@neon/env",
+			"mailer-sdk@1.2.3",
+		]);
+		expect(result.next.join("\n")).not.toMatch(/install|add /);
+		const text = formatNewFunctionDone(result);
+		expect(text.startsWith("Function created.\n")).toBe(true);
+		expect(text).toContain(
+			`  Dependencies  installed with ${result.packageManager}\n`,
+		);
 	});
 
 	it("rejects an unknown operation and an unknown template", async () => {
