@@ -1178,12 +1178,12 @@ describe("RealtimeClient", () => {
 			data: [{ id: 1, title: "before" }],
 		});
 		expect(socket.sent.slice(-2)).toEqual([
+			{ type: "unsubscribe", live_id: "41" },
 			{
 				type: "subscribe",
 				request_id: "2",
 				authorization: replacement.capability,
 			},
-			{ type: "unsubscribe", live_id: "41" },
 		]);
 		socket.receive({
 			type: "subscribed",
@@ -1289,15 +1289,10 @@ describe("RealtimeClient", () => {
 
 		await expect(renewal).rejects.toThrow("subscription is closed");
 		expect(subscription.getState().status).toBe("closed");
-		expect(socket.sent.slice(-2)).toEqual([
-			{
-				type: "subscribe",
-				request_id: "2",
-				authorization: query("replacement", "22".repeat(32), 2)
-					.capability,
-			},
-			{ type: "unsubscribe", live_id: "41" },
-		]);
+		expect(socket.sent.at(-1)).toEqual({
+			type: "unsubscribe",
+			live_id: "41",
+		});
 		expect(socket.readyState).toBe(3);
 		client.close();
 	});

@@ -1,5 +1,4 @@
 import {
-	type ConnectionCallbacks,
 	ConnectionCoordinator,
 	ConnectionCoordinatorError,
 	type ConnectionHandle,
@@ -49,28 +48,11 @@ export type {
 	RealtimeLogLevel,
 } from "./types.js";
 
-interface PendingAdmission {
-	readonly promise: Promise<void>;
-	resolve(): void;
-	reject(error: unknown): void;
-}
-
-interface CallbackGate {
-	run(callback: () => void): void;
-	open(): void;
-}
-
-interface SubscriptionBinding {
-	readonly handle: ConnectionHandle;
-	readonly events: ReturnType<ClientEventSink["createSubscription"]>;
-	readonly admission?: PendingAdmission;
-}
-
 class RealtimeClientImpl implements RealtimeClient {
 	private readonly coordinator: ConnectionCoordinator;
 	private readonly handles = new Map<
 		Subscription<unknown>,
-		SubscriptionBinding
+		ConnectionHandle
 	>();
 	private disposed = false;
 	private readonly parsers: PostgreSQLParserRegistry;
@@ -120,11 +102,15 @@ class RealtimeClientImpl implements RealtimeClient {
 			events,
 		);
 		registerSubscriptionEvents(subscription, events);
-		const handle = this.createConnectionHandle(subscription, query, events);
-		this.handles.set(subscription as Subscription<unknown>, {
-			handle,
+		const handle = this.coordinator.subscribe(query, {
 			events,
+			reconciliation: subscription,
+			admitted: (columns) => subscription.admit(columns),
+			connecting: () => subscription.connecting(),
+			queryUnavailable: () => subscription.queryUnavailable(),
+			failed: (error) => subscription.fail(error),
 		});
+		this.handles.set(subscription as Subscription<unknown>, handle);
 		return subscription;
 	}
 
@@ -133,21 +119,15 @@ class RealtimeClientImpl implements RealtimeClient {
 		query: SealedLiveQuery<Row>,
 	): Promise<void> {
 		validateSealedQuery(query);
-		const binding = this.handles.get(subscription as Subscription<unknown>);
-		if (!binding) throw new Error("Live-query subscription is closed");
+		const handle = this.handles.get(subscription as Subscription<unknown>);
+		if (!handle) throw new Error("Live-query subscription is closed");
 		try {
 			if (
 				sealedQueryEnvelopeVersion(subscription.currentQuery()) !==
 				sealedQueryEnvelopeVersion(query)
 			) {
-				await this.replaceConnectionHandle(
-					subscription,
-					query,
-					binding,
-				);
-				return;
-			}
-			await binding.handle.renew(query);
+				await handle.resubscribe(query);
+			} else await handle.renew(query);
 			subscription.replaceSealedQuery(query);
 		} catch (error) {
 			const state = subscription.getState();
@@ -163,20 +143,17 @@ class RealtimeClientImpl implements RealtimeClient {
 	}
 
 	unsubscribe<Row>(subscription: Subscription<Row>): void {
-		const binding = this.handles.get(subscription as Subscription<unknown>);
-		if (!binding) return;
+		const handle = this.handles.get(subscription as Subscription<unknown>);
+		if (!handle) return;
 		this.handles.delete(subscription as Subscription<unknown>);
-		binding.admission?.reject(
-			new Error("Live-query subscription is closed"),
-		);
-		binding.handle.unsubscribe();
+		handle.unsubscribe();
 		subscription.markClosed();
 	}
 
 	parserFailed<Row>(subscription: Subscription<Row>, cause: Error): void {
-		const binding = this.handles.get(subscription as Subscription<unknown>);
-		if (!binding) return;
-		binding.handle.fail(
+		const handle = this.handles.get(subscription as Subscription<unknown>);
+		if (!handle) return;
+		handle.fail(
 			new ConnectionCoordinatorError(
 				"parser_error",
 				false,
@@ -189,129 +166,12 @@ class RealtimeClientImpl implements RealtimeClient {
 	close(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		for (const [subscription, binding] of this.handles) {
-			binding.admission?.reject(new Error("Realtime client is closed"));
+		for (const subscription of this.handles.keys())
 			subscription.markClosed();
-		}
 		this.handles.clear();
 		this.coordinator.close();
 		this.events.closed();
 	}
-
-	private connectionCallbacks<Row>(
-		subscription: Subscription<Row>,
-		events: ReturnType<ClientEventSink["createSubscription"]>,
-		admission?: PendingAdmission,
-		gate?: CallbackGate,
-	): ConnectionCallbacks {
-		const deliver = (callback: () => void): void =>
-			gate ? gate.run(callback) : callback();
-		return {
-			events,
-			reconciliation: subscription,
-			admitted: (columns) =>
-				deliver(() => {
-					subscription.admit(columns);
-					admission?.resolve();
-				}),
-			connecting: () => deliver(() => subscription.connecting()),
-			queryUnavailable: (error) =>
-				deliver(() => {
-					admission?.reject(error);
-					subscription.queryUnavailable();
-				}),
-			failed: (error) =>
-				deliver(() => {
-					admission?.reject(error);
-					subscription.fail(error);
-				}),
-		};
-	}
-
-	private createConnectionHandle<Row>(
-		subscription: Subscription<Row>,
-		query: SealedLiveQuery<Row>,
-		events: ReturnType<ClientEventSink["createSubscription"]>,
-	): ConnectionHandle {
-		return this.coordinator.subscribe(
-			query,
-			this.connectionCallbacks(subscription, events),
-		);
-	}
-
-	private replaceConnectionHandle<Row>(
-		subscription: Subscription<Row>,
-		query: SealedLiveQuery<Row>,
-		previous: SubscriptionBinding,
-	): Promise<void> {
-		const admission = pendingAdmission();
-		const gate = callbackGate();
-		const handle = previous.handle.replace(
-			query,
-			this.connectionCallbacks(
-				subscription,
-				previous.events,
-				admission,
-				gate,
-			),
-		);
-		this.handles.set(subscription as Subscription<unknown>, {
-			handle,
-			events: previous.events,
-			admission,
-		});
-		previous.admission?.reject(
-			new ConnectionCoordinatorError(
-				"renewal_superseded",
-				false,
-				"Live-query renewal was superseded by a newer sealed query",
-			),
-		);
-		subscription.replaceSealedQuery(query);
-		subscription.connecting();
-		gate.open();
-		return admission.promise;
-	}
-}
-
-function callbackGate(): CallbackGate {
-	let open = false;
-	const pending: (() => void)[] = [];
-	return {
-		run: (callback) => {
-			if (open) callback();
-			else pending.push(callback);
-		},
-		open: () => {
-			if (open) return;
-			open = true;
-			for (const callback of pending) callback();
-			pending.length = 0;
-		},
-	};
-}
-
-function pendingAdmission(): PendingAdmission {
-	let settled = false;
-	let resolvePromise!: () => void;
-	let rejectPromise!: (error: unknown) => void;
-	const promise = new Promise<void>((resolve, reject) => {
-		resolvePromise = resolve;
-		rejectPromise = reject;
-	});
-	return {
-		promise,
-		resolve: () => {
-			if (settled) return;
-			settled = true;
-			resolvePromise();
-		},
-		reject: (error) => {
-			if (settled) return;
-			settled = true;
-			rejectPromise(error);
-		},
-	};
 }
 
 /**
