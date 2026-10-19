@@ -88,9 +88,7 @@ export type FunctionTemplateOperation = {
 	title: string;
 	description: string;
 	source: string;
-	/** Router layout only: the URL path the generated router dispatches to. */
 	route?: string;
-	/** Separate layout only: the Neon deployment slug this operation registers under. */
 	slug?: string;
 	recommended: boolean;
 };
@@ -100,7 +98,6 @@ export type FunctionTemplate = {
 	provider?: string;
 	title: string;
 	description: string;
-	/** `router` generates one aggregate function; `separate` deploys each operation on its own. */
 	layout: TemplateLayout;
 	dependencies: string[];
 	environment: FunctionTemplateEnvironment[];
@@ -180,8 +177,6 @@ export const parseTemplateOperations = (
 			recommended: item.recommended,
 		};
 		if (layout === "separate") {
-			// Separate operations deploy independently, so each names its own
-			// Neon slug; routes are meaningless without a router.
 			if (
 				typeof item.slug !== "string" ||
 				!OPERATION_SLUG.test(item.slug) ||

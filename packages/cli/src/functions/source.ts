@@ -11,10 +11,6 @@ import {
 	type RegistryIndexEntry,
 } from "./registry.js";
 
-// The registry lives in neondatabase/examples (`registry/`). neon.com serves
-// only the index (and the schemas) through a CDN-cached read-through, so
-// listing never spends GitHub's rate limits. Template files are always read
-// from raw GitHub, which is also where the index comes from when neon.com is down.
 export const DEFAULT_REGISTRY_URL =
 	"https://neon.com/functions/registry/registry.json";
 export const GITHUB_REGISTRY_URL =
@@ -81,7 +77,6 @@ const dirReader = (dir: string): ReadText => {
 		}
 		let path: string;
 		try {
-			// realpath, so a symlink inside the registry cannot reach outside it.
 			path = realpathSync(resolve(root, relativePath));
 		} catch {
 			throw new RegistryError(
@@ -102,7 +97,6 @@ const urlReader = (index: URL): ReadText => {
 	const base = new URL(".", index);
 	return async (relativePath, limit) => {
 		const url = new URL(relativePath, base);
-		// `%2e%2e` is a dot segment to the URL parser, so check the result as well as the input.
 		if (
 			url.origin !== base.origin ||
 			!url.pathname.startsWith(base.pathname)
@@ -155,12 +149,6 @@ export const templateSourcePaths = (template: FunctionTemplate): string[] =>
 
 const INDEX_FILE = "registry.json";
 
-/**
- * Open the registry `NEON_FUNCTION_REGISTRY_DIR` / `_URL` names, or else the
- * default: the index from neon.com, falling back to the GitHub copy when
- * neon.com cannot serve it, and template files from GitHub either way. An
- * explicit source never falls back and serves its own template files.
- */
 export const openRegistry = async (
 	source?: RegistrySource,
 ): Promise<Registry> => {

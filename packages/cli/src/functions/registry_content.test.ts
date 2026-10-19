@@ -9,8 +9,6 @@ const schema = (name: string) =>
 
 const normalize = (pattern: string) => pattern.replace(/\\\//g, "/");
 
-// These schemas are the contract. neondatabase/examples publishes a copy in
-// registry/schemas/, which neon.com serves; update it after changing these.
 describe("the registry JSON Schemas", () => {
 	it("keeps template.schema.json in step with the parser", () => {
 		const template = schema("template.schema.json");
