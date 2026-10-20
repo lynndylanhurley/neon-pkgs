@@ -332,8 +332,8 @@ export const authFlow = async ({
 };
 
 /**
- * Persist before identity lookup so a lookup failure cannot discard the new session.
- * Merge the identity only while that session remains current on disk.
+ * One write, after the lookup: a second write that adds `user_id` could fail the keyring size
+ * check after the first had already replaced the previous credential.
  */
 const persistNewSession = async (
 	at: CredentialLocation,
