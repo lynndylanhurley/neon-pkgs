@@ -80,6 +80,8 @@ baseline exactly as without `resume`. That covers a different database history,
 a position the server can no longer serve, a changed query or result columns,
 and a server without resume support. A collection without persistence starts
 empty, so it begins from a baseline and resumes only across reconnects.
+A baseline installed while `resume` is off discards any stored position, so
+turning `resume` back on starts from a baseline too.
 
 ## Optimistic mutations
 

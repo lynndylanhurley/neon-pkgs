@@ -591,6 +591,127 @@ describe("resuming a persisted Realtime collection", () => {
 		second.client.close();
 	});
 
+	it("drops row identities written by still-queued commits when a baseline replaces them", async () => {
+		const store = emptyStore();
+		const client = new TestClient<MessageRow>();
+		let finishMutation!: () => void;
+		const collection = persistedCollection(client, store, {
+			onUpdate: () =>
+				new Promise<void>((resolve) => {
+					finishMutation = resolve;
+				}),
+		});
+		const preload = collection.preload();
+		client.latest().reset([row("a", 1, "one")], position("0/10"));
+		await preload;
+
+		// Both sync commits queue behind the persisting optimistic transaction.
+		const mutation = collection.update(1, (draft) => {
+			draft.title = "optimistic";
+		});
+		client
+			.latest()
+			.batch(
+				[{ type: "upsert", rowId: "b", row: { id: 2, title: "two" } }],
+				["8"],
+				position("0/20"),
+			);
+		client.latest().reset([row("z", 9, "nine")], position("0/30"));
+		finishMutation();
+		await mutation.isPersisted.promise;
+		await eventually(() =>
+			expect(store.metadata.get("realtime:position")).toEqual(
+				position("0/30"),
+			),
+		);
+		expect(store.metadata).toEqual(
+			new Map<string, unknown>([
+				["realtime:row:z", 9],
+				["realtime:position", position("0/30")],
+			]),
+		);
+		await collection.cleanup();
+
+		// After a restart, a catch-up that inserts key 2 under a new row ID
+		// must not collide with the discarded row's identity.
+		const restarted = new TestClient<MessageRow>();
+		const resumed = persistedCollection(restarted, store);
+		const loading = resumed.preload();
+		restarted.latest().resume(
+			[
+				{
+					type: "upsert",
+					rowId: "c",
+					row: { id: 2, title: "new two" },
+				},
+			],
+			position("0/40"),
+		);
+		await loading;
+		expect(resumed.status).toBe("ready");
+		expect(plainRows(resumed)).toEqual(
+			expect.arrayContaining([
+				{ id: 9, title: "nine" },
+				{ id: 2, title: "new two" },
+			]),
+		);
+		expect(resumed.size).toBe(2);
+	});
+
+	it("invalidates a stored position when a collection syncs with resume disabled", async () => {
+		const store = await storeAfterFirstRun();
+		const disabledClient = new TestClient<MessageRow>();
+		const disabled = persistedCollection(disabledClient, store, {
+			resume: false,
+		});
+		const loading = disabled.preload();
+		expect(disabledClient.latest().options).toEqual({ materialize: false });
+		disabledClient
+			.latest()
+			.reset([row("z", 9, "replacement")], position("0/30"));
+		await loading;
+		await disabled.cleanup();
+		expect(store.metadata.has("realtime:position")).toBe(false);
+
+		// Re-enabling resume must start from a baseline, not from the
+		// position of rows this collection no longer holds.
+		const enabledClient = new TestClient<MessageRow>();
+		const enabled = persistedCollection(enabledClient, store);
+		const loadingAgain = enabled.preload();
+		expect(enabledClient.latest().options).toEqual({
+			materialize: false,
+			resume: { from: undefined },
+		});
+		enabledClient.latest().reset([row("a", 1, "one")], position("0/40"));
+		await loadingAgain;
+		expect(plainRows(enabled)).toEqual([{ id: 1, title: "one" }]);
+		expect(store.metadata).toEqual(
+			new Map<string, unknown>([
+				["realtime:row:a", 1],
+				["realtime:position", position("0/40")],
+			]),
+		);
+	});
+
+	it("writes no sync metadata for a collection that never opted in", async () => {
+		const store = emptyStore();
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store, {
+			resume: false,
+		});
+		const preload = collection.preload();
+		client.latest().reset([row("a", 1, "one")], position("0/10"));
+		await preload;
+		client
+			.latest()
+			.batch(
+				[{ type: "upsert", rowId: "b", row: { id: 2, title: "two" } }],
+				["9"],
+				position("0/20"),
+			);
+		expect(store.metadata.size).toBe(0);
+	});
+
 	it("persists a position only once its changes are applied", async () => {
 		const store = emptyStore();
 		const client = new TestClient<MessageRow>();
@@ -1084,6 +1205,9 @@ function persistedCollection(
 					commit();
 				}
 				let pending: Array<(state: PersistedState) => void> = [];
+				// TanStack DB applies sync transactions in commit order, and so does
+				// its persistence, whatever order their receipts settle in.
+				let queue: Promise<void> | undefined;
 				return sync({
 					...params,
 					begin: (beginOptions) => {
@@ -1117,8 +1241,21 @@ function persistedCollection(
 						const persist = () => {
 							for (const apply of writes) apply(store);
 						};
-						if (receipt === true) persist();
-						else void receipt.then(persist, () => undefined);
+						if (receipt === true && !queue) {
+							persist();
+						} else {
+							const next: Promise<void> = (
+								queue ?? Promise.resolve()
+							)
+								.then(() =>
+									receipt === true ? undefined : receipt,
+								)
+								.then(persist, () => undefined)
+								.finally(() => {
+									if (queue === next) queue = undefined;
+								});
+							queue = next;
+						}
 						return receipt;
 					},
 					metadata: metadata && {

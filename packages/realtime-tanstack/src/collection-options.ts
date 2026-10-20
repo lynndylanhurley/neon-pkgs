@@ -258,11 +258,26 @@ function createRealtimeCollectionOptions<
 						for (const { row } of rows)
 							write({ type: "insert", value: row });
 						if (resumeStore) {
+							// `list()` sees applied metadata and only the newest pending
+							// transaction. Identities written by earlier commits that are
+							// still queued are in `rowIds`, so clear both.
+							const stale = new Set<string>();
 							for (const { key } of resumeStore.list(ROW_PREFIX))
-								resumeStore.delete(key);
+								stale.add(key);
+							for (const rowId of rowIds.keys())
+								stale.add(ROW_PREFIX + rowId);
+							for (const key of stale) resumeStore.delete(key);
 							for (const [rowId, key] of nextRowIds)
 								resumeStore.set(ROW_PREFIX + rowId, key);
 							savePosition(resumeStore, position);
+						} else if (
+							metadata?.collection.get(POSITION_KEY) !== undefined
+						) {
+							// A position stored while resume was enabled no longer
+							// describes these rows. Drop it so re-enabling resume
+							// starts from a baseline; leftover identities are cleared
+							// by that baseline.
+							metadata.collection.delete(POSITION_KEY);
 						}
 						const receipt = commit();
 						rowIds = nextRowIds;
