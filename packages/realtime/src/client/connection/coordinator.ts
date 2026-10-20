@@ -8,6 +8,7 @@ import {
 	decodeServerFrame,
 	encodeClientMessage,
 	ProtocolError,
+	REALTIME_FRAGMENT_SUBPROTOCOL,
 	REALTIME_SUBPROTOCOL,
 } from "../protocol/index.js";
 import type { ServerMessage, WireColumn } from "../protocol/messages.js";
@@ -62,6 +63,8 @@ export interface ConnectionHandle {
 }
 
 export interface WebSocketLike {
+	/** Server-selected subprotocol. Omission by a custom transport retains v1. */
+	readonly protocol?: string;
 	readonly readyState: number;
 	addEventListener(type: "open", listener: () => void): void;
 	addEventListener(
@@ -159,6 +162,7 @@ export class ConnectionCoordinator {
 	private readonly heartbeat?: ConnectionHeartbeat;
 	private readonly events: ClientEventSink;
 	private socket?: WebSocketLike;
+	private selectedProtocol?: string;
 	private reconnectTimer?: ReconnectTimer;
 	private reconnectDeadlineTimer?: ReconnectTimer;
 	private stabilityTimer?: ReconnectTimer;
@@ -347,13 +351,14 @@ export class ConnectionCoordinator {
 			return;
 		this.cancelReconnect();
 		this.ready = false;
+		this.selectedProtocol = undefined;
 		this.events.connection.attemptStarted();
 		let socket: WebSocketLike;
 		try {
-			socket = this.webSocketFactory(
-				this.options.url,
+			socket = this.webSocketFactory(this.options.url, [
+				REALTIME_FRAGMENT_SUBPROTOCOL,
 				REALTIME_SUBPROTOCOL,
-			);
+			]);
 		} catch (error) {
 			this.noteConnectionLost(error);
 			this.scheduleReconnect();
@@ -383,7 +388,9 @@ export class ConnectionCoordinator {
 
 	private receive(text: string): void {
 		try {
-			const frame = decodeServerFrame(text);
+			this.selectedProtocol ??=
+				this.socket?.protocol ?? REALTIME_SUBPROTOCOL;
+			const frame = decodeServerFrame(text, this.selectedProtocol);
 			this.heartbeat?.received();
 			this.route(frame.message, frame.mvcc);
 		} catch (error) {
@@ -446,9 +453,11 @@ export class ConnectionCoordinator {
 				return;
 			case "baseline_sync_start":
 			case "baseline_sync_batch":
+			case "baseline_sync_fragment":
 			case "baseline_sync_end":
 			case "open":
 			case "keyed_results":
+			case "keyed_results_fragment":
 			case "reset_required":
 			case "commit":
 			case "progress":
@@ -481,6 +490,7 @@ export class ConnectionCoordinator {
 				epoch: message.epoch,
 				firstSequence: message.first_sequence,
 				columnCount: message.columns.length,
+				columnCodecs: message.columns.map((column) => column.codec),
 				target: subscription.callbacks.reconciliation,
 			});
 			this.reconciler.deactivate(message.live_id);
@@ -506,6 +516,7 @@ export class ConnectionCoordinator {
 			epoch: message.epoch,
 			firstSequence: message.first_sequence,
 			columnCount: message.columns.length,
+			columnCodecs: message.columns.map((column) => column.codec),
 			target: subscription.callbacks.reconciliation,
 			lifecycle: subscription.recovery,
 		});

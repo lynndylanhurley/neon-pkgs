@@ -1,11 +1,14 @@
 import { type ParsedMvccSnapshot, parseMvccSnapshot } from "../mvcc.js";
-import { ProtocolError } from "../protocol/codec.js";
+import { ProtocolError, validateFragmentPayload } from "../protocol/codec.js";
 import type {
+	ChangeTarget,
+	ColumnCodec,
 	MvccSnapshot,
 	ServerMessage,
 	WireChange,
 	WireRow,
 } from "../protocol/messages.js";
+import { RowAssembler } from "./fragments.js";
 
 export interface ReconciledBatch {
 	readonly changes: readonly WireChange[];
@@ -40,6 +43,7 @@ export interface AddReconciliationTarget {
 	readonly epoch: string;
 	readonly firstSequence: string;
 	readonly columnCount: number;
+	readonly columnCodecs?: readonly ColumnCodec[];
 	readonly target: ReconciliationTarget;
 	readonly lifecycle?: ReconciliationLifecycle;
 }
@@ -69,12 +73,14 @@ interface PendingBaselineSync {
 	nextBatch: number;
 	rows: WireRow[];
 	rowKeys: Set<string>;
+	fragments?: RowAssembler;
 }
 
 interface TargetState {
 	readonly target: ReconciliationTarget;
 	readonly lifecycle?: ReconciliationLifecycle;
 	readonly columnCount: number;
+	readonly columnCodecs?: readonly ColumnCodec[];
 	active: boolean;
 	epoch: bigint;
 	nextSequence: bigint;
@@ -88,6 +94,7 @@ interface StagedTarget {
 	readonly changes: WireChange[];
 	readonly txids: readonly string[];
 	readonly nextSequence: bigint;
+	readonly fragmented?: boolean;
 }
 
 interface StagedReset {
@@ -95,11 +102,21 @@ interface StagedReset {
 	readonly firstSequence: bigint;
 }
 
+interface FragmentPatch {
+	readonly targets: readonly ChangeTarget[];
+	readonly txids: readonly string[];
+	readonly rows: RowAssembler;
+	readonly changes: WireChange[];
+	nextPart: number;
+	complete: boolean;
+}
+
 interface PendingPublication {
 	readonly id: string;
 	nextBody: number;
 	readonly batches: Map<string, StagedTarget>;
 	readonly resets: Map<string, StagedReset>;
+	readonly fragments: Map<string, FragmentPatch>;
 }
 
 type ReconciliationMessage = Extract<
@@ -108,9 +125,11 @@ type ReconciliationMessage = Extract<
 		type:
 			| "baseline_sync_start"
 			| "baseline_sync_batch"
+			| "baseline_sync_fragment"
 			| "baseline_sync_end"
 			| "open"
 			| "keyed_results"
+			| "keyed_results_fragment"
 			| "reset_required"
 			| "commit"
 			| "progress";
@@ -139,6 +158,7 @@ export class BaselineSyncPublicationReconciler {
 			target: input.target,
 			lifecycle: input.lifecycle,
 			columnCount: input.columnCount,
+			columnCodecs: input.columnCodecs,
 			active: true,
 			epoch: BigInt(input.epoch),
 			nextSequence: BigInt(input.firstSequence),
@@ -160,6 +180,7 @@ export class BaselineSyncPublicationReconciler {
 		state.live = false;
 		this.publication?.batches.delete(liveId);
 		this.publication?.resets.delete(liveId);
+		this.pruneFragments();
 	}
 
 	remove(liveId: string): void {
@@ -169,6 +190,7 @@ export class BaselineSyncPublicationReconciler {
 		this.publication?.batches.delete(liveId);
 		this.publication?.resets.delete(liveId);
 		this.targets.delete(liveId);
+		this.pruneFragments();
 	}
 
 	clear(): void {
@@ -181,6 +203,7 @@ export class BaselineSyncPublicationReconciler {
 			this.publication &&
 			(message.type === "baseline_sync_start" ||
 				message.type === "baseline_sync_batch" ||
+				message.type === "baseline_sync_fragment" ||
 				message.type === "baseline_sync_end")
 		) {
 			throw new ProtocolError("baseline sync interrupted a publication");
@@ -195,6 +218,9 @@ export class BaselineSyncPublicationReconciler {
 			case "baseline_sync_batch":
 				this.baselineSyncBatch(message);
 				return;
+			case "baseline_sync_fragment":
+				this.baselineFragment(message);
+				return;
 			case "baseline_sync_end":
 				this.baselineSyncEnd(message);
 				return;
@@ -203,6 +229,9 @@ export class BaselineSyncPublicationReconciler {
 				return;
 			case "keyed_results":
 				this.keyedResults(message);
+				return;
+			case "keyed_results_fragment":
+				this.keyedFragment(message);
 				return;
 			case "reset_required":
 				this.stageReset(message);
@@ -290,6 +319,7 @@ export class BaselineSyncPublicationReconciler {
 			throw new ProtocolError("invalid baseline sync batch");
 		}
 		for (const row of message.rows) {
+			baselineSync.fragments?.acceptWhole(row);
 			if (row.values.length !== state.columnCount) {
 				throw new ProtocolError(
 					"baseline sync row arity does not match columns",
@@ -304,6 +334,49 @@ export class BaselineSyncPublicationReconciler {
 			baselineSync.rows.push(row);
 		}
 		baselineSync.nextBatch += 1;
+	}
+
+	private baselineFragment(
+		message: Extract<
+			ReconciliationMessage,
+			{ type: "baseline_sync_fragment" }
+		>,
+	): void {
+		const state = this.target(message.live_id);
+		if (!state.active) return;
+		const version = baselineSyncVersion(
+			message.epoch,
+			message.baseline_sync_attempt,
+		);
+		if (
+			version.epoch < state.epoch ||
+			isOlder(version, state.latestBaselineSync)
+		)
+			return;
+		const baseline = state.baselineSync;
+		if (
+			version.epoch !== state.epoch ||
+			!baseline ||
+			!sameVersion(version, baseline.version) ||
+			message.index !== baseline.nextBatch
+		)
+			throw new ProtocolError("invalid baseline fragment");
+		validateFragmentPayload(message.pieces);
+		baseline.fragments ??= new RowAssembler(
+			this.fragmentCodecs(state),
+			BigInt(baseline.rows.length),
+		);
+		for (const piece of message.pieces) {
+			const row = baseline.fragments.accept(piece);
+			if (!row) continue;
+			if (baseline.rowKeys.has(row.row_key))
+				throw new ProtocolError(
+					"baseline sync contains a duplicate row key",
+				);
+			baseline.rowKeys.add(row.row_key);
+			baseline.rows.push(row);
+		}
+		baseline.nextBatch += 1;
 	}
 
 	private baselineSyncEnd(
@@ -333,6 +406,7 @@ export class BaselineSyncPublicationReconciler {
 		// subsequently delivered publication is newer than the baseline. Replay
 		// the complete contiguous backlog; interpreting transaction IDs against
 		// the informational MVCC fields can incorrectly discard valid changes.
+		baselineSync.fragments?.finish();
 		const replay = state.backlog;
 		const rows = Object.freeze([...baselineSync.rows]);
 		state.baselineSync = undefined;
@@ -366,6 +440,7 @@ export class BaselineSyncPublicationReconciler {
 			nextBody: 0,
 			batches: new Map(),
 			resets: new Map(),
+			fragments: new Map(),
 		};
 	}
 
@@ -387,6 +462,7 @@ export class BaselineSyncPublicationReconciler {
 			const sequence = BigInt(target.sequence);
 			const existing = publication.batches.get(target.live_id);
 			if (
+				existing?.fragmented ||
 				publication.resets.has(target.live_id) ||
 				state.epoch !== BigInt(target.epoch) ||
 				state.nextSequence !== sequence ||
@@ -414,6 +490,130 @@ export class BaselineSyncPublicationReconciler {
 					txids: message.txids,
 					nextSequence: sequence + 1n,
 				});
+			}
+		}
+	}
+
+	private keyedFragment(
+		message: Extract<
+			ReconciliationMessage,
+			{ type: "keyed_results_fragment" }
+		>,
+	): void {
+		const publication = this.publicationBody(
+			message.publication_id,
+			message.index,
+		);
+		validateFragmentPayload(message.pieces);
+		if (
+			message.targets.length === 0 ||
+			message.targets.length > 256 ||
+			message.txids.length === 0 ||
+			message.txids.length > 256 ||
+			new Set(message.txids).size !== message.txids.length ||
+			new Set(message.targets.map((t) => t.live_id)).size !==
+				message.targets.length
+		) {
+			throw new ProtocolError("fragment attribution limits");
+		}
+		const active = message.targets.filter(
+			(t) => this.target(t.live_id).active,
+		);
+		const firstActive = active[0];
+		if (!firstActive) return;
+		const key = message.targets[0].live_id;
+		let patch = publication.fragments.get(key);
+		if (!patch) {
+			if (message.part_index !== 0)
+				throw new ProtocolError(
+					"fragment patch starts after part zero",
+				);
+			const codecs = this.fragmentCodecs(
+				this.target(firstActive.live_id),
+			);
+			for (const target of active) {
+				const state = this.target(target.live_id);
+				if (
+					publication.batches.has(target.live_id) ||
+					publication.resets.has(target.live_id) ||
+					state.epoch !== BigInt(target.epoch) ||
+					state.nextSequence !== BigInt(target.sequence) ||
+					!sameStrings(codecs, this.fragmentCodecs(state))
+				) {
+					throw new ProtocolError(
+						"invalid fragment publication target",
+					);
+				}
+			}
+			patch = {
+				targets: message.targets,
+				txids: message.txids,
+				rows: new RowAssembler(codecs),
+				changes: [],
+				nextPart: 0,
+				complete: false,
+			};
+			publication.fragments.set(key, patch);
+			for (const target of active)
+				publication.batches.set(target.live_id, {
+					changes: patch.changes,
+					txids: message.txids,
+					nextSequence: BigInt(target.sequence) + 1n,
+					fragmented: true,
+				});
+		}
+		if (
+			patch.complete ||
+			message.part_index !== patch.nextPart ||
+			!sameStrings(patch.txids, message.txids) ||
+			patch.targets.length !== message.targets.length ||
+			patch.targets.some((t, i) => {
+				const next = message.targets[i];
+				return (
+					!next ||
+					t.live_id !== next.live_id ||
+					t.epoch !== next.epoch ||
+					t.sequence !== next.sequence
+				);
+			})
+		)
+			throw new ProtocolError("fragment patch identity or part order");
+		for (const piece of message.pieces) {
+			if (patch.changes.length >= 512)
+				throw new ProtocolError("fragment logical change limit");
+			if (piece.op === "remove") {
+				patch.rows.remove(piece.row_index);
+				patch.changes.push({ op: "remove", row_key: piece.row_key });
+			} else {
+				const row = patch.rows.accept(piece);
+				if (row) patch.changes.push({ op: "upsert", ...row });
+			}
+		}
+		if (message.is_last) {
+			patch.rows.finish();
+			patch.complete = true;
+		} else if (message.part_index === 0xffff_ffff)
+			throw new ProtocolError("fragment part index overflow");
+		patch.nextPart += 1;
+	}
+
+	private fragmentCodecs(state: TargetState): readonly ColumnCodec[] {
+		if (
+			!state.columnCodecs ||
+			state.columnCodecs.length !== state.columnCount
+		) {
+			throw new ProtocolError("fragment column codecs are missing");
+		}
+		return state.columnCodecs;
+	}
+
+	private pruneFragments(): void {
+		if (!this.publication) return;
+		for (const [key, patch] of this.publication.fragments) {
+			if (
+				!patch.targets.some((t) => this.targets.get(t.live_id)?.active)
+			) {
+				this.publication.fragments.delete(key);
 			}
 		}
 	}
@@ -451,6 +651,11 @@ export class BaselineSyncPublicationReconciler {
 			publication.nextBody !== bodyCount
 		) {
 			throw new ProtocolError("invalid publication commit");
+		}
+		for (const fragment of publication.fragments.values()) {
+			if (!fragment.complete)
+				throw new ProtocolError("incomplete fragment patch at commit");
+			fragment.rows.finish();
 		}
 		this.publication = undefined;
 

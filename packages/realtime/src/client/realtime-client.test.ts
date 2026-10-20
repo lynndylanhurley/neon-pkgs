@@ -29,6 +29,7 @@ class FakeWebSocket {
 	readyState = 0;
 	readonly sent: Record<string, unknown>[] = [];
 	readonly protocols: string | string[];
+	protocol = "neon.realtime.v1";
 	private readonly listeners = new Map<string, Set<FakeWebSocketListener>>();
 
 	constructor(_url: string, protocols: string | string[]) {
@@ -89,6 +90,86 @@ afterEach(() => {
 });
 
 describe("RealtimeClient", () => {
+	it.each([
+		"commit",
+		"disconnect",
+	])("keeps the committed value during fragments until %s", (ending) => {
+		vi.useFakeTimers();
+		useFakeWebSocket();
+		const client = createRealtimeClient({ url: "ws://live.test/v1" });
+		try {
+			const subscription = client.subscribe(query("fragmented"));
+			defined(FakeWebSocket.instances[0]).protocol = "neon.realtime.v2";
+			const socket = connectAndAdmit();
+			baselineSync(socket, "before");
+			const updates: unknown[] = [];
+			subscription.onUpdate((update) => updates.push(update));
+			socket.receive({ type: "open", publication_id: "p" });
+			const cell = (
+				column: number,
+				text: string,
+				offset: number,
+				total: number,
+			) => ({
+				op: "upsert",
+				row_index: "0",
+				row_key: ROW_KEY,
+				column_index: column,
+				offset: String(offset),
+				total_bytes: String(total),
+				is_null: false,
+				base64: btoa(text),
+			});
+			socket.receive({
+				type: "keyed_results_fragment",
+				publication_id: "p",
+				index: 0,
+				part_index: 0,
+				is_last: false,
+				txids: ["30"],
+				targets: [{ live_id: "41", epoch: "1", sequence: "1" }],
+				pieces: [cell(0, "1", 0, 1), cell(1, "repla", 0, 11)],
+			});
+			expect(subscription.getSnapshot().data).toEqual([
+				{ id: 1, title: "before" },
+			]);
+			expect(updates).toEqual([]);
+			if (ending === "disconnect") {
+				socket.finishClose();
+				expect(subscription.getSnapshot().data).toEqual([
+					{ id: 1, title: "before" },
+				]);
+			} else {
+				socket.receive({
+					type: "keyed_results_fragment",
+					publication_id: "p",
+					index: 1,
+					part_index: 1,
+					is_last: true,
+					txids: ["30"],
+					targets: [{ live_id: "41", epoch: "1", sequence: "1" }],
+					pieces: [cell(1, "cement", 5, 11)],
+				});
+				expect(subscription.getSnapshot().data).toEqual([
+					{ id: 1, title: "before" },
+				]);
+				expect(updates).toEqual([]);
+				socket.receive({
+					type: "commit",
+					publication_id: "p",
+					body_count: 2,
+					frontier: { lsn: "0/30" },
+				});
+				expect(subscription.getSnapshot().data).toEqual([
+					{ id: 1, title: "replacement" },
+				]);
+				expect(updates).toHaveLength(1);
+			}
+		} finally {
+			client.close();
+		}
+	});
+
 	it.each([
 		"upstream_cancelled",
 		"backend_overloaded",
@@ -591,7 +672,10 @@ describe("RealtimeClient", () => {
 		const socket = connectAndAdmit();
 		baselineSync(socket, "before");
 
-		expect(socket.protocols).toBe("neon.realtime.v1");
+		expect(socket.protocols).toEqual([
+			"neon.realtime.v2",
+			"neon.realtime.v1",
+		]);
 		expect(socket.sent[0]).toMatchObject({ type: "subscribe" });
 		expect(subscription.getSnapshot()).toEqual({
 			status: "live",

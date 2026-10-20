@@ -1,6 +1,10 @@
-import type { Column, ServerMessage } from "./wire-types.gen.js";
+import type { Column, ServerMessage } from "./wire-types-v2.gen.js";
 
 export const REALTIME_SUBPROTOCOL = "neon.realtime.v1";
+export const REALTIME_FRAGMENT_SUBPROTOCOL = "neon.realtime.v2";
+export const MAX_FRAGMENT_BYTES = 65_536;
+export const MAX_FRAGMENT_PIECES = 256;
+export type { ServerMessage } from "./wire-types-v2.gen.js";
 
 type ServerVariant<Type extends ServerMessage["type"]> = Extract<
 	ServerMessage,
@@ -22,5 +26,4 @@ export type {
 	Mvcc as MvccSnapshot,
 	ResetTarget,
 	Row as WireRow,
-	ServerMessage,
 } from "./wire-types.gen.js";

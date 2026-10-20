@@ -11,6 +11,7 @@ export {
 	type ColumnCodec,
 	type ConnectionErrorCode,
 	type MvccSnapshot,
+	REALTIME_FRAGMENT_SUBPROTOCOL,
 	REALTIME_SUBPROTOCOL,
 	type ResetTarget,
 	type ServerMessage,

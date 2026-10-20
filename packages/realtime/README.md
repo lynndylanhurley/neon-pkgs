@@ -489,9 +489,12 @@ The package exports its versioned protocol and decoded capability schemas at
 See the [schema maintenance notes](schema/README.md) for generation and
 downstream synchronization.
 
-V2 defines byte fragments for larger values while retaining the v1 message
-shapes. SDK negotiation and reassembly are separate follow-up changes; adding
-the schema alone does not enable fragment delivery.
+The SDK offers `neon.realtime.v2` and `neon.realtime.v1` and validates messages
+using the protocol selected by the server. V2 supports byte fragments for larger
+values while retaining the v1 message shapes. Older servers can select v1.
+Custom WebSocket transports must expose the selected `protocol` to use v2;
+transports that omit it retain v1 behavior. Fragment delivery also requires a
+compatible server deployment.
 
 ### Output sizes and memory
 
@@ -499,7 +502,7 @@ The SDK accepts complete JSON WebSocket messages without imposing a message-size
 or cumulative-staging byte cap. Older SDK releases imposed a 1 MiB limit on each
 incoming message, including its envelope and JSON/base64 encoding.
 
-The server's large-output profile uses these separate bounds:
+The server's v1 large-output profile uses these separate bounds:
 
 | Boundary | Limit | What is measured |
 | --- | ---: | --- |
@@ -510,11 +513,19 @@ The server's large-output profile uses these separate bounds:
 These are server limits, not additional SDK validation rules. Availability depends
 on the server deployment. Query parameters retain their separate 16 KiB limit.
 
-A `baseline_sync_batch` or `keyed_results` message is a chunk of a larger result.
-The server splits batches between rows after encoding-size accounting; it never
-splits a row or value across messages. JSON escaping can expand text by up to six
-times, and base64 expands binary data by roughly one third, so the message budget
-must exceed the raw row budget.
+A `baseline_sync_batch` or `keyed_results` message contains complete rows and
+can be part of a larger result. V2 also supports `baseline_sync_fragment` and
+`keyed_results_fragment`, which can split individual values between messages.
+Each fragment carries at most 64 KiB of decoded payload and 256 pieces. The SDK
+decodes each piece separately, preserves UTF-8 characters across byte boundaries,
+and applies PostgreSQL type parsers after the value is complete. A partial row is
+never visible: baseline rows install at baseline completion, and incremental
+changes install at publication commit with one logical sequence advancement.
+
+The fragment contract does not impose the v1 value or row ceiling. Admission of
+larger values depends on the server's operation and cumulative memory budgets.
+Base64 expands fragment bytes by roughly one third; ordinary JSON text can
+expand by up to six times through escaping.
 
 The SDK retains a complete baseline until installation and buffers publications
 until commit. Splitting messages does not bound total browser memory: decoded

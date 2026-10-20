@@ -23,6 +23,7 @@ class FakeWebSocket implements WebSocketLike {
 	readyState = FakeWebSocket.CONNECTING;
 	readonly sent: Record<string, unknown>[] = [];
 	readonly protocols: string | string[];
+	protocol = "neon.realtime.v1";
 	onSend?: (message: Record<string, unknown>) => void;
 	onClose?: () => void;
 	emitCloseOnClose = true;
@@ -258,12 +259,76 @@ describe("ConnectionCoordinator", () => {
 		expect(entries.map((entry) => entry.event)).toEqual(["query_expired"]);
 	});
 
-	it("negotiates neon.realtime.v1, waits for ready, and routes admission", () => {
+	it.each([
+		"neon.realtime.v1",
+		"neon.realtime.v2",
+	])("decodes using the server-selected %s dialect", (protocol) => {
 		const callbacks = target();
 		const coordinator = createCoordinator();
 		coordinator.subscribe({ capability: "token" }, callbacks);
 		const socket = defined(FakeWebSocket.instances[0]);
-		expect(socket.protocols).toBe("neon.realtime.v1");
+		socket.protocol = protocol;
+		socket.open();
+		socket.receive({ type: "ready" });
+		socket.receive({
+			type: "subscribed",
+			request_id: "1",
+			live_id: "41",
+			epoch: "1",
+			first_sequence: "1",
+			columns: [
+				{ name: "value", type_oid: 25, typmod: -1, codec: "pg_text" },
+			],
+		});
+		socket.receive({
+			type: "baseline_sync_start",
+			live_id: "41",
+			epoch: "1",
+			baseline_sync_attempt: "1",
+			mvcc: { xmin: "1", xmax: "2", xip: [] },
+		});
+		socket.receive({
+			type: "baseline_sync_fragment",
+			live_id: "41",
+			epoch: "1",
+			baseline_sync_attempt: "1",
+			index: 0,
+			pieces: [
+				{
+					row_index: "0",
+					row_key: "a".repeat(64),
+					column_index: 0,
+					offset: "0",
+					total_bytes: "1",
+					is_null: false,
+					base64: "eA==",
+				},
+			],
+		});
+		expect(callbacks.reconciliation.installReset).not.toHaveBeenCalled();
+		if (protocol === "neon.realtime.v2") {
+			socket.receive({
+				type: "baseline_sync_end",
+				live_id: "41",
+				epoch: "1",
+				baseline_sync_attempt: "1",
+				batch_count: 1,
+			});
+			expect(callbacks.reconciliation.installReset).toHaveBeenCalledWith([
+				{ row_key: "a".repeat(64), values: ["x"] },
+			]);
+		} else expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+	});
+
+	it("offers v2 and v1, waits for ready, and routes admission", () => {
+		const callbacks = target();
+		const coordinator = createCoordinator();
+		coordinator.subscribe({ capability: "token" }, callbacks);
+		const socket = defined(FakeWebSocket.instances[0]);
+		expect(socket.protocols).toEqual([
+			"neon.realtime.v2",
+			"neon.realtime.v1",
+		]);
 		socket.open();
 		expect(socket.sent).toEqual([]);
 		socket.receive({ type: "ready" });

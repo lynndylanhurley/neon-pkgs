@@ -1,10 +1,19 @@
 import { type ParsedMvccSnapshot, parseMvccSnapshot } from "../mvcc.js";
-import type { ClientMessage, ServerMessage } from "./messages.js";
+import {
+	type ClientMessage,
+	MAX_FRAGMENT_BYTES,
+	MAX_FRAGMENT_PIECES,
+	REALTIME_FRAGMENT_SUBPROTOCOL,
+	REALTIME_SUBPROTOCOL,
+	type ServerMessage,
+} from "./messages.js";
 import {
 	validateClientMessage as generatedClientMessageValidator,
 	validateServerMessage as generatedServerMessageValidator,
 	realtimeSchemaPatterns,
 } from "./schema-validator.gen.js";
+
+import { validateServerMessage as generatedFragmentServerValidator } from "./schema-validator-v2.gen.js";
 
 const UTF8 = new TextEncoder();
 
@@ -49,12 +58,24 @@ export function encodeClientMessage(message: ClientMessage): string {
 }
 
 /** Parse and strictly validate one server WebSocket text frame. */
-export function decodeServerMessage(text: string): ServerMessage {
-	return decodeServerFrame(text).message;
+export function decodeServerMessage(
+	text: string,
+	dialect: string = REALTIME_SUBPROTOCOL,
+): ServerMessage {
+	return decodeServerFrame(text, dialect).message;
 }
 
 /** Decode a server frame and parse any connection-wide progress evidence. */
-export function decodeServerFrame(text: string): DecodedServerFrame {
+export function decodeServerFrame(
+	text: string,
+	dialect: string = REALTIME_SUBPROTOCOL,
+): DecodedServerFrame {
+	if (
+		dialect !== REALTIME_SUBPROTOCOL &&
+		dialect !== REALTIME_FRAGMENT_SUBPROTOCOL
+	) {
+		throw new ProtocolError("unsupported selected WebSocket subprotocol");
+	}
 	// JSON.parse silently keeps the last duplicate member, so inspect the source
 	// before parsing and before the generated structural validator sees it.
 	try {
@@ -71,8 +92,19 @@ export function decodeServerFrame(text: string): DecodedServerFrame {
 		throw new ProtocolError("not valid JSON");
 	}
 
-	assertSchema(validateServerMessage, value);
+	assertSchema(
+		dialect === REALTIME_FRAGMENT_SUBPROTOCOL
+			? (generatedFragmentServerValidator as unknown as SchemaValidator)
+			: validateServerMessage,
+		value,
+	);
 	const message = value as ServerMessage;
+	if (
+		message.type === "baseline_sync_fragment" ||
+		message.type === "keyed_results_fragment"
+	) {
+		validateFragmentPayload(message.pieces);
+	}
 	validateServerUtf8Limits(message as WireRecord);
 	let mvcc: ParsedMvccSnapshot | undefined;
 	if (message.type === "baseline_sync_start" || message.type === "progress") {
@@ -269,5 +301,26 @@ function rejectDuplicateKeys(text: string): void {
 			if (keys.has(key)) throw new ProtocolError("duplicate object key");
 			keys.add(key);
 		}
+	}
+}
+
+/** Validate aggregate decoded payload before retaining any part of a message. */
+export function validateFragmentPayload(
+	pieces: readonly ({ base64: string } | { op: "remove" })[],
+): void {
+	if (pieces.length === 0 || pieces.length > MAX_FRAGMENT_PIECES)
+		throw new ProtocolError("fragment piece limit");
+	let bytes = 0;
+	for (const piece of pieces) {
+		if (!("base64" in piece)) continue;
+		const encoded = piece.base64;
+		const length =
+			(encoded.length / 4) * 3 -
+			(encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0);
+		if (!Number.isInteger(length) || length < 0)
+			throw new ProtocolError("invalid fragment base64 length");
+		bytes += length;
+		if (bytes > MAX_FRAGMENT_BYTES)
+			throw new ProtocolError("fragment payload limit");
 	}
 }
