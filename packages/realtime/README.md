@@ -223,6 +223,12 @@ sealed query; other subscriptions keep receiving updates. Its last complete
 result remains available with status `connecting`. Re-admission uses a fresh
 request and live ID and installs a new baseline.
 
+`subscription_error` with `resource_limit_exceeded` is terminal and carries
+SQLSTATE `54000` (`program_limit_exceeded`). It can occur during baseline sync
+or subsequent updates when a value, row, result, or execution budget exceeds a
+server limit. The subscription enters `error`; the SDK does not retry it
+automatically. Reduce the query's resource requirements before subscribing again.
+
 A retry with a hint never runs before it. With the hint `h` (at least 100 ms),
 the SDK waits a random time in `[h, max(h, min(2h, cap))]`, which spreads
 clients across the service's ramp-up. `cap` is 30 seconds. Hints support the full
