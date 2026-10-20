@@ -341,21 +341,13 @@ const persistNewSession = async (
 	apiClient: NeonApiClient,
 	configDir: string,
 ): Promise<{ id?: string; email?: string }> => {
-	const stored = oauthCredentialsFromTokenSet(credentials, null);
-	writeOAuthCredentials(configDir, at, stored);
 	const identity = await fetchIdentity(apiClient);
-	if (identity.id) {
-		const current = storeFor(configDir).read(at);
-		if (
-			current !== null &&
-			current.credentials.access_token === stored.access_token
-		) {
-			writeOAuthCredentials(configDir, at, {
-				...current.credentials,
-				user_id: identity.id,
-			});
-		}
-	}
+	const stored = oauthCredentialsFromTokenSet(credentials, null);
+	writeOAuthCredentials(
+		configDir,
+		at,
+		identity.id ? { ...stored, user_id: identity.id } : stored,
+	);
 	return identity;
 };
 

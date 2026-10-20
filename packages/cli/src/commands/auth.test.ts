@@ -216,6 +216,64 @@ describe("auth", () => {
 		}
 	});
 
+	test("keeps the previous keyring credential when adding user_id pushes the new one past the limit", async ({
+		runMockServer,
+	}) => {
+		const server = await runMockServer("main");
+		const dir = mkdtempSync(join(tmpdir(), "neon-keyring-replace-"));
+		const { keyring, writes } = windowsKeyring();
+		const account = keyringAccount(dir, "DEFAULT");
+		const prior = {
+			type: "oauth",
+			access_token: "prior",
+			refresh_token: "prior-refresh",
+			expires_at: Date.now() + 100_000,
+			user_id: "prior-user",
+		};
+		keyring.set(KEYRING_SERVICE, account, JSON.stringify(prior));
+		writes.length = 0;
+		profilesCore.upsertProfile(dir, "DEFAULT", {
+			credentials: "keyring",
+			userId: "prior-user",
+		});
+		const profilesBefore = readFileSync(
+			join(dir, "profiles.json"),
+			"utf-8",
+		);
+		oauthServer.service.once("beforeResponse", (response) => {
+			const withoutUserId = {
+				type: "oauth",
+				access_token: "",
+				expires_at: Date.now(),
+				refresh_token: response.body.refresh_token,
+			};
+			response.body.access_token = "a".repeat(
+				WINDOWS_KEYRING_LIMIT -
+					10 -
+					JSON.stringify(withoutUserId).length,
+			);
+		});
+
+		try {
+			await expect(
+				keyringLogin(
+					(server.address() as AddressInfo).port,
+					dir,
+					keyring,
+				),
+			).rejects.toBeInstanceOf(KeyringValueTooLargeError);
+			expect(writes).toEqual([]);
+			expect(
+				JSON.parse(keyring.get(KEYRING_SERVICE, account) ?? "{}"),
+			).toEqual(prior);
+			expect(readFileSync(join(dir, "profiles.json"), "utf-8")).toBe(
+				profilesBefore,
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("refuses to open a browser when --keyring is set and unavailable", async ({
 		runMockServer,
 	}) => {
