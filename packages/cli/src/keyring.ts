@@ -11,8 +11,10 @@ type NapiKeyring = {
 	Entry: new (service: string, account: string) => NapiEntry;
 };
 
-// Windows Credential Manager accepts at most 2560 bytes, or 1280 UTF-16 code units.
-const WINDOWS_CREDENTIAL_MAX_CODE_UNITS = 1280;
+/** Windows Credential Manager stores at most 2560 bytes per item: 1280 UTF-16 code units. */
+export const keyringPasswordLimit = (
+	platform: NodeJS.Platform,
+): number | undefined => (platform === "win32" ? 1280 : undefined);
 
 const isPackaged = (): boolean =>
 	(process as { pkg?: unknown }).pkg !== undefined;
@@ -33,9 +35,10 @@ export const tryLoadKeyring = (): KeyringBackend | null => {
 		const spec = ["@napi-rs", "keyring"].join("/");
 		const loaded = require(spec) as NapiKeyring;
 		const { Entry } = loaded;
+		const maxPasswordCodeUnits = keyringPasswordLimit(process.platform);
 		return {
-			...(process.platform === "win32"
-				? { maxPasswordCodeUnits: WINDOWS_CREDENTIAL_MAX_CODE_UNITS }
+			...(maxPasswordCodeUnits !== undefined
+				? { maxPasswordCodeUnits }
 				: {}),
 			get(service, account) {
 				try {

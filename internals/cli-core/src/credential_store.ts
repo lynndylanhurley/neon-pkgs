@@ -53,7 +53,7 @@ export class KeyringUnavailableError extends Error {
 export class KeyringValueTooLargeError extends Error {
 	constructor(profile: string, actual: number, maximum: number) {
 		super(
-			`Credentials for profile "${profile}" use ${actual} UTF-16 code units, but this OS keyring accepts at most ${maximum}. Retry without \`--keyring\` to keep the credential in an owner-only file. If this profile already uses the keyring, remove it first with \`neon profile remove ${profile} --yes\`.`,
+			`Credentials for profile "${profile}" are ${actual} characters, and this OS keyring stores at most ${maximum}. Run \`neon login --profile ${profile}\` without \`--keyring\` to keep the credential in an owner-only file. If this profile already uses the keyring, remove it first with \`neon profile remove ${profile} --yes\`.`,
 		);
 		this.name = "KeyringValueTooLargeError";
 	}

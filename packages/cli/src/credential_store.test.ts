@@ -19,6 +19,7 @@ import {
 	KeyringClearError,
 	KeyringUnavailableError,
 	KeyringUnreadableError,
+	KeyringValueTooLargeError,
 	keyringAccount,
 } from "@neon-internals/cli-core/credential_store";
 import type {
@@ -188,6 +189,41 @@ describe("createCredentialStore — keyring", () => {
 			/1281.*1280/,
 		);
 		expect(writes).toEqual([1280]);
+	});
+
+	test("measures the keyring limit in UTF-16 code units, not bytes or code points", () => {
+		const items = new Map<string, string>();
+		const keyring: KeyringBackend = {
+			maxPasswordCodeUnits: 1280,
+			get: (service, account) =>
+				items.get(`${service}\0${account}`) ?? null,
+			set: (service, account, password) => {
+				items.set(`${service}\0${account}`, password);
+			},
+			delete: (service, account) =>
+				items.delete(`${service}\0${account}`),
+		};
+		const store = createCredentialStore(makeDir(), { keyring });
+		const at = keyringAt();
+		const credentialsEndingWith = (tail: string, codeUnits: number) => {
+			const credentials = { type: "oauth", access_token: tail };
+			credentials.access_token =
+				"x".repeat(codeUnits - JSON.stringify(credentials).length) +
+				tail;
+			expect(JSON.stringify(credentials)).toHaveLength(codeUnits);
+			return credentials;
+		};
+
+		// "é" is two UTF-8 bytes but one UTF-16 code unit, so this fits.
+		const accented = credentialsEndingWith("é".repeat(100), 1280);
+		store.write(at, accented);
+		expect(store.read(at)?.credentials).toEqual(accented);
+
+		// An emoji is one code point but two UTF-16 code units, so this does not.
+		expect(() =>
+			store.write(at, credentialsEndingWith("🔑", 1281)),
+		).toThrow(KeyringValueTooLargeError);
+		expect(store.read(at)?.credentials).toEqual(accented);
 	});
 
 	test("two config directories do not share a DEFAULT slot", () => {
