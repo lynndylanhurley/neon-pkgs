@@ -9,6 +9,10 @@ jobs:
             packages: ${{ steps.affected.outputs.packages }}
             dirs: ${{ steps.affected.outputs.dirs }}
             tools: ${{ steps.affected.outputs.tools }}
+            e2e_live: ${{ steps.affected.outputs.e2e_live }}
+            e2e_auth: ${{ steps.affected.outputs.e2e_auth }}
+            e2e_gateway: ${{ steps.affected.outputs.e2e_gateway }}
+            psql: ${{ steps.affected.outputs.psql }}
             matrix: ${{ steps.matrix.outputs.matrix }}
             has-tests: ${{ steps.matrix.outputs.has-tests }}
         steps:
@@ -168,6 +172,171 @@ jobs:
                   slug: neondatabase/neon-pkgs
                   use_oidc: true
 
+    # The e2e jobs wait for lint, build, and unit tests so a broken change never spends
+    # live-API budget; Actions has no job priority, so `needs` is the only ordering lever.
+
+    # Calls the real Neon Management API: creates Postgres projects, mutates branches, and
+    # deletes everything again, against the throwaway "neon-pkgs Integration Test Org"
+    # (NEON_TEST_API_KEY, an org-scoped key). Never point that secret at an org holding
+    # anything worth keeping: the suite sweeps stale `neon-ts-e2e-*` projects on start.
+    e2e-live:
+        name: Live Neon e2e
+        needs: [changes, lint, build, test]
+        # A skipped dependency (no tests or build needed) must not skip this job, but a failed one must block it.
+        # Fork and Dependabot pull requests get no repository secrets, so the suite could only fail there.
+        if: >-
+            ${{ !cancelled() && !failure() &&
+            needs.changes.outputs.e2e_live == 'true' &&
+            (github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+        runs-on:
+            group: databricks-ghec-untrusted-runner-group
+            labels: linux-ubuntu-latest-untrusted-2core-8gb
+        timeout-minutes: 20
+        steps:
+            - name: Harden the runner (Audit all outbound calls)
+              uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
+              with:
+                  egress-policy: audit
+
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: ./.github/actions/prepare
+            # One suite at a time: they share a single org, and running them in
+            # parallel multiplies the project churn for no wall-clock gain.
+            - name: Run live e2e suites
+              env:
+                  NEON_API_KEY: ${{ secrets.NEON_TEST_API_KEY }}
+                  NEON_ORG_ID: ${{ vars.NEON_TEST_ORG_ID }}
+              run: pnpm test:e2e:live
+
+    # Provisions a throwaway project, enables Neon Auth on its default branch with email
+    # verification off (so headless signups succeed), and deletes both afterwards. Separate
+    # from e2e-live so auth provisioning and real signups only spend budget when @neon/auth
+    # (or the harness) is affected.
+    e2e-auth:
+        name: Live Neon Auth e2e
+        needs: [changes, lint, build, test]
+        # A skipped dependency (no tests or build needed) must not skip this job, but a failed one must block it.
+        # Fork and Dependabot pull requests get no repository secrets, so the suite could only fail there.
+        if: >-
+            ${{ !cancelled() && !failure() &&
+            needs.changes.outputs.e2e_auth == 'true' &&
+            (github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+        runs-on:
+            group: databricks-ghec-untrusted-runner-group
+            labels: linux-ubuntu-latest-untrusted-2core-8gb
+        timeout-minutes: 20
+        steps:
+            - name: Harden the runner (Audit all outbound calls)
+              uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
+              with:
+                  egress-policy: audit
+
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: ./.github/actions/prepare
+            - name: Run live Neon Auth e2e
+              env:
+                  NEON_API_KEY: ${{ secrets.NEON_TEST_API_KEY }}
+                  NEON_ORG_ID: ${{ vars.NEON_TEST_ORG_ID }}
+              run: pnpm --filter @neon/auth test:e2e
+
+    # Calls real models: the capability matrix exercises one representative per gateway route
+    # family, and the SDK-version matrix generates text with every model the branch serves on
+    # AI SDK 6 and 7, well over a hundred inference requests per run. That is why it only runs
+    # when @neon/ai-sdk-provider is affected. No gateway credentials are stored: global setup
+    # creates a throwaway project in the integration test org, mints a branch credential
+    # scoped to `ai_gateway:invoke`, and deletes both afterwards.
+    e2e-gateway:
+        name: Live AI Gateway e2e
+        needs: [changes, lint, build, test]
+        # A skipped dependency (no tests or build needed) must not skip this job, but a failed one must block it.
+        # Fork and Dependabot pull requests get no repository secrets, so the suite could only fail there.
+        if: >-
+            ${{ !cancelled() && !failure() &&
+            needs.changes.outputs.e2e_gateway == 'true' &&
+            (github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+        runs-on:
+            group: databricks-ghec-untrusted-runner-group
+            labels: linux-ubuntu-latest-untrusted-2core-8gb
+        timeout-minutes: 30
+        steps:
+            - name: Harden the runner (Audit all outbound calls)
+              uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
+              with:
+                  egress-policy: audit
+
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: ./.github/actions/prepare
+            - name: Run live AI Gateway e2e
+              env:
+                  NEON_API_KEY: ${{ secrets.NEON_TEST_API_KEY }}
+                  NEON_ORG_ID: ${{ vars.NEON_TEST_ORG_ID }}
+              run: pnpm --filter @neon/ai-sdk-provider test:e2e
+
+    # Drives packages/cli/tests/psql-conformance against the TypeScript psql, using upstream
+    # PostgreSQL regression scripts vendored under fixtures/upstream/<PG_TAG>/ (pinned in
+    # POSTGRES_REF) so no public source checkout is needed at run time. Neon supports PG
+    # 14-18; 19beta1 tracks upstream psql parity ahead of server GA. The harness boots its
+    # own postgres via @testcontainers/postgresql, which the runner group's Docker supports.
+    psql-conformance:
+        name: psql-conformance (pg-${{ matrix.pg }})
+        needs: [changes, lint, build, test]
+        # A skipped dependency (no tests or build needed) must not skip this job, but a failed one must block it.
+        if: ${{ !cancelled() && !failure() && needs.changes.outputs.psql == 'true' }}
+        runs-on:
+            group: databricks-ghec-untrusted-runner-group
+            labels: linux-ubuntu-latest-untrusted-2core-8gb
+        strategy:
+            fail-fast: false
+            matrix:
+                pg: ["14", "15", "16", "17", "18", "19beta1"]
+        steps:
+            - name: Harden the runner (Audit all outbound calls)
+              uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
+              with:
+                  egress-policy: audit
+
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+            - uses: ./.github/actions/prepare
+
+            # `...` force-builds neon's workspace deps too; neon's tsc needs their dist/ output.
+            - name: Build neon (+ deps)
+              run: pnpm --filter neon... build
+
+            - name: Run conformance suite
+              working-directory: packages/cli
+              env:
+                  # dist/psql/cli.js is the standalone psql shim: the yargs CLI (dist/cli.js)
+                  # intercepts libpq flags like -v, so the harness routes through the shim.
+                  PSQL_BINARY: ${{ github.workspace }}/packages/cli/dist/psql/cli.js
+                  # Opt in to the TAP-style integration specs (they self-skip otherwise, see
+                  # tap/_helpers.ts:RUN_INTEGRATION).
+                  RUN_INTEGRATION: "1"
+                  # Pins the testcontainers image to this row's PG major; pg-fixture.ts boots
+                  # it with the full seed + bind-mount and probes the server major from it.
+                  PGCONFORMANCE_PG_IMAGE: postgres:${{ matrix.pg }}
+              run: |
+                  set -o pipefail
+                  # The log lands where the suite's .gitignore already excludes *.log, so a
+                  # stray local run never gets committed.
+                  pnpm test:conformance 2>&1 \
+                    | tee tests/psql-conformance/psql-conformance.log
+
+            - name: Upload conformance log
+              if: always()
+              uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+              with:
+                  # Artifact names must be unique within a run.
+                  name: psql-conformance-pg-${{ matrix.pg }}
+                  path: packages/cli/tests/psql-conformance/psql-conformance.log
+                  if-no-files-found: warn
+                  retention-days: 14
+
 name: CI
 
 permissions:
@@ -183,3 +352,4 @@ on:
     push:
         branches:
             - main
+    workflow_dispatch: ~

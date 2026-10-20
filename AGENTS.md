@@ -62,7 +62,7 @@ pnpm test:e2e:live
 
 | | |
 | --- | --- |
-| **Workflow** | `.github/workflows/e2e-live.yml` — every PR, every push to `main`, plus `workflow_dispatch` |
+| **Workflow** | the `e2e-live` job in `.github/workflows/ci.yml` — after lint, build, and unit tests pass, when `@neon/sdk`, `@neon/config`, `@neon/config-runtime`, `@neon/env`, `@neon/effect`, or `neon` is affected; every push to `main` and `workflow_dispatch` |
 | **Org** | `org-autumn-tree-56376911` ("neon-pkgs Integration Test Org"), Launch plan |
 | **Skipped for** | Fork and Dependabot PRs — GitHub does not expose repository secrets to untrusted PR code |
 | **Runner** | Protected runner group. The Neon API is reachable from it. |
@@ -139,7 +139,7 @@ To wire up a **new** variable end to end:
    gh variable set NEON_TEST_SOMETHING --repo neondatabase/neon-pkgs --body "<value>"
    ```
 
-5. **Map it in the workflow's `env:` block** in `.github/workflows/e2e-live.yml`,
+5. **Map it in the job's `env:` block** of `e2e-live` in `.github/workflows/ci.yml`,
    using the local name as the key and `secrets.*` / `vars.*` as the value.
 6. **Verify on a PR from this repository.** Fork PRs get neither secrets nor variables,
    so the job is skipped there and a green fork run proves nothing about the wiring.
@@ -161,7 +161,7 @@ workflow rather than inside `test:e2e:live`:
 
 | | |
 | --- | --- |
-| **Workflow** | `.github/workflows/e2e-gateway.yml` — path-filtered to `packages/ai-sdk-provider/**` and `tests/e2e-harness/**`, plus pushes to `main` and `workflow_dispatch` |
+| **Workflow** | the `e2e-gateway` job in `.github/workflows/ci.yml` — runs when `@neon/ai-sdk-provider` is affected (including `tests/e2e-harness/` changes), after lint, build, and unit tests pass, plus pushes to `main` and `workflow_dispatch` |
 | **Why separate** | A run makes well over a hundred inference requests: `sdk-version-matrix` generates text with **every** model the branch serves on both AI SDK 6 and 7. Attaching that to every pull request would spend on changes it cannot cover |
 | **Credentials** | The same `NEON_TEST_API_KEY`. **No gateway token is stored** |
 
@@ -201,7 +201,7 @@ not to every pull request.
 
 | | |
 | --- | --- |
-| **Workflow** | `.github/workflows/e2e-auth.yml` — path-filtered to `packages/auth/**` and `tests/e2e-harness/**`, plus pushes to `main` and `workflow_dispatch` |
+| **Workflow** | the `e2e-auth` job in `.github/workflows/ci.yml` — runs when `@neon/auth` is affected (including `tests/e2e-harness/` changes), after lint, build, and unit tests pass, plus pushes to `main` and `workflow_dispatch` |
 | **Credentials** | The same `NEON_TEST_API_KEY`. Nothing auth-specific is stored |
 
 `e2e/global-setup.ts` provisions everything from that key: a throwaway project, Neon Auth

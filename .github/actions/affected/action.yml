@@ -1,7 +1,8 @@
 description: >-
     Lists the workspace packages a pull request affects (changed packages plus their
     dependents), or every package when a repo-wide file changed or the event is not a
-    pull request. Run after ./.github/actions/prepare on a checkout with fetch-depth 0.
+    pull request. Also flags which live suites are relevant; on a push those follow only
+    the pushed commits. Run after ./.github/actions/prepare on a checkout with fetch-depth 0.
 
 name: Affected packages
 
@@ -26,6 +27,18 @@ outputs:
     tools:
         description: "'true' when @neon/tools is affected"
         value: ${{ steps.detect.outputs.tools }}
+    e2e_live:
+        description: "'true' when a package covered by `pnpm test:e2e:live` is affected"
+        value: ${{ steps.detect.outputs.e2e_live }}
+    e2e_auth:
+        description: "'true' when @neon/auth is affected"
+        value: ${{ steps.detect.outputs.e2e_auth }}
+    e2e_gateway:
+        description: "'true' when @neon/ai-sdk-provider is affected"
+        value: ${{ steps.detect.outputs.e2e_gateway }}
+    psql:
+        description: "'true' when the psql implementation or its conformance harness changed"
+        value: ${{ steps.detect.outputs.psql }}
 
 runs:
     using: composite
@@ -36,6 +49,7 @@ runs:
               EVENT_NAME: ${{ github.event_name }}
               BASE_REF: ${{ github.base_ref }}
               WORKFLOW: ${{ inputs.workflow }}
+              BEFORE: ${{ github.event.before }}
           run: |
               set -euo pipefail
 
@@ -44,6 +58,7 @@ runs:
               repo_wide='^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json|tsconfig\.base\.json|biome\.json|\.node-version|mise\.toml|scripts/.*|\.github/actions/.*)$'
 
               all=false
+              changed=
               base="origin/$BASE_REF"
               if [[ "$EVENT_NAME" != pull_request ]]; then
                   all=true
@@ -70,10 +85,41 @@ runs:
               cli=$(jq -r 'any(.[]; . == "cli" or . == "neonctl")' <<<"$dirs")
               tools=$(jq -r 'any(.[]; . == "@neon/tools")' <<<"$packages")
 
+              # The live suites cost real projects and model calls, so a push to main runs
+              # only the suites its own commits affect; build and unit tests still run in full.
+              e2e_all=$all
+              e2e_list=$list
+              if [[ "$EVENT_NAME" == push && ! "$BEFORE" =~ ^0*$ ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+                  changed=$(git diff --name-only "$BEFORE" HEAD)
+                  e2e_all=false
+                  if grep -Eq "$repo_wide" <<<"$changed" || grep -Fxq "$WORKFLOW" <<<"$changed"; then
+                      e2e_all=true
+                  else
+                      e2e_list=$(pnpm --filter "...[$BEFORE]" --changed-files-ignore-pattern='**/*.md' ls --depth -1 --json | jq -c --arg root "$PWD" '[.[] | select(.path != $root)]')
+                      e2e_list=${e2e_list:-[]}
+                  fi
+              fi
+              e2e_packages=$(jq -c '[.[].name]' <<<"$e2e_list")
+
+              # Mirrors the packages `pnpm test:e2e:live` runs (root package.json).
+              e2e_live=$(jq -r 'any(.[]; IN("@neon/sdk", "@neon/config", "@neon/config-runtime", "@neon/env", "@neon/effect", "neon"))' <<<"$e2e_packages")
+              e2e_auth=$(jq -r 'any(.[]; . == "@neon/auth")' <<<"$e2e_packages")
+              e2e_gateway=$(jq -r 'any(.[]; . == "@neon/ai-sdk-provider")' <<<"$e2e_packages")
+
+              # The conformance harness is not a separate package, so the changed paths decide.
+              psql=$e2e_all
+              if grep -Eq '^packages/cli/(src/psql|tests/psql-conformance)/' <<<"$changed"; then
+                  psql=true
+              fi
+
               {
                   echo "all=$all"
                   echo "packages=$packages"
                   echo "dirs=$dirs"
                   echo "cli=$cli"
                   echo "tools=$tools"
+                  echo "e2e_live=$e2e_live"
+                  echo "e2e_auth=$e2e_auth"
+                  echo "e2e_gateway=$e2e_gateway"
+                  echo "psql=$psql"
               } | tee -a "$GITHUB_OUTPUT"

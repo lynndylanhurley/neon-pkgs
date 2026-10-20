@@ -295,11 +295,10 @@ curl -s https://api.github.com/repos/postgres/postgres/git/refs/tags/REL_18_2 \
 ## CI integration
 
 The conformance suite runs on every PR that touches the TS psql or the
-harness — see `.github/workflows/psql-conformance.yml`. The workflow:
+harness — see the `psql-conformance` job in `.github/workflows/ci.yml`. The job:
 
-- triggers on PRs that change `src/psql/**`, `src/utils/psql.ts`,
-  `src/commands/{branches,connection_string,projects}.ts`, or
-  `tests/psql-conformance/**` (plus pushes to `main` / `feat/ts-psql`);
+- runs after lint, build, and unit tests pass, when a PR changes
+  `src/psql/**` or `tests/psql-conformance/**` (and on every push to `main`);
 - fans out across a **PG matrix** (one job per supported major — see
   below) — each job boots its own `postgres:<major>` GHA service
   container and exposes it via `PGCONFORMANCE_PG_HOST=127.0.0.1` /
@@ -341,6 +340,6 @@ Flip to blocking when **all** of the following hold:
 When that bar is met:
 
 - drop `continue-on-error: true` from the `Run conformance suite` step
-  in `psql-conformance.yml`;
+  in the `psql-conformance` job of `ci.yml`;
 - (optionally) add the `psql-conformance` job to the required-checks
   set in the repo's branch protection rules.
