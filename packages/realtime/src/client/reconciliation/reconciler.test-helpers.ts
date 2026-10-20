@@ -23,14 +23,24 @@ export function target(events: string[] = [], prefix = ""): MockTarget {
 	const label = (value: string) => `${prefix ? `${prefix}:` : ""}${value}`;
 	return {
 		baselineSyncStarted: vi.fn(),
+		acceptsResume: vi.fn(() => false),
 		installReset: vi.fn((rows: readonly WireRow[]) =>
 			events.push(label(`installReset:${keys(rows)}`)),
+		),
+		installResume: vi.fn((changes: readonly WireChange[]) =>
+			events.push(label(`installResume:${changeKeys(changes)}`)),
 		),
 		applyBatch: vi.fn((changes: readonly WireChange[]) =>
 			events.push(label(`apply:${changeKeys(changes)}`)),
 		),
 		publishReset: vi.fn((rows: readonly WireRow[]) =>
 			events.push(label(`publishReset:${keys(rows)}`)),
+		),
+		publishResume: vi.fn((changes: readonly WireChange[]) =>
+			events.push(label(`publishResume:${changeKeys(changes)}`)),
+		),
+		advancePosition: vi.fn((lsn: string) =>
+			events.push(label(`advance:${lsn}`)),
 		),
 		publishBatch: vi.fn((batch: ReconciledBatch) =>
 			events.push(

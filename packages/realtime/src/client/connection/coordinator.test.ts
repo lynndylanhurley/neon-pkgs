@@ -1387,10 +1387,14 @@ function target(): ConnectionCallbacks & {
 } {
 	const reconciliation: ReconciliationTarget = {
 		baselineSyncStarted: vi.fn(),
+		acceptsResume: vi.fn(() => false),
 		installReset: vi.fn(),
+		installResume: vi.fn(),
 		applyBatch: vi.fn(),
 		publishReset: vi.fn(),
+		publishResume: vi.fn(),
 		publishBatch: vi.fn(),
+		advancePosition: vi.fn(),
 		applyProgress: vi.fn(),
 		caughtUp: vi.fn(),
 		baselineSyncCompleted: vi.fn(),

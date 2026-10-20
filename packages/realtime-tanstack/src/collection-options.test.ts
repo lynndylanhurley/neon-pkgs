@@ -1,5 +1,6 @@
 import type {
 	LiveQueryChange,
+	LiveQueryPosition,
 	LiveQueryState,
 	MaterializedLiveQueryOptions,
 	MaterializedLiveQuerySubscription,
@@ -376,6 +377,265 @@ describe("Realtime TanStack DB collection", () => {
 	});
 });
 
+describe("resuming a persisted Realtime collection", () => {
+	it("leaves subscriptions and sync metadata untouched without resume", async () => {
+		const store = emptyStore();
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store, {
+			resume: false,
+		});
+		const preload = collection.preload();
+		client.latest().reset([row("a", 1, "one")], position("0/10"));
+		await preload;
+
+		expect(client.latest().options).toEqual({ materialize: false });
+		expect(store.metadata.size).toBe(0);
+		expect(store.rows.get(1)).toMatchObject({ title: "one" });
+	});
+
+	it("stores the position and row identities with the rows of a baseline", async () => {
+		const store = emptyStore();
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store);
+		const preload = collection.preload();
+		expect(client.latest().options).toEqual({
+			materialize: false,
+			resume: { from: undefined },
+		});
+		client
+			.latest()
+			.reset([row("a", 1, "one"), row("b", 2, "two")], position("0/10"));
+		await preload;
+
+		expect(store.metadata).toEqual(
+			new Map<string, unknown>([
+				["realtime:row:a", 1],
+				["realtime:row:b", 2],
+				["realtime:position", position("0/10")],
+			]),
+		);
+
+		client.latest().batch(
+			[
+				{ type: "remove", rowId: "a" },
+				{ type: "upsert", rowId: "c", row: { id: 3, title: "three" } },
+			],
+			["7"],
+			position("0/18"),
+		);
+		expect(store.metadata).toEqual(
+			new Map<string, unknown>([
+				["realtime:row:b", 2],
+				["realtime:position", position("0/18")],
+				["realtime:row:c", 3],
+			]),
+		);
+	});
+
+	it("applies only the catch-up changes after a restart when the server confirms continuity", async () => {
+		const store = await storeAfterFirstRun();
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store);
+		const preload = collection.preload();
+
+		expect(client.latest().options).toEqual({
+			materialize: false,
+			resume: { from: position("0/10") },
+		});
+		const changes = vi.fn();
+		collection.subscribeChanges(changes, { includeInitialState: false });
+		client.latest().resume(
+			[
+				{ type: "upsert", rowId: "a", row: { id: 1, title: "edited" } },
+				{ type: "remove", rowId: "b" },
+			],
+			position("0/30"),
+		);
+		await preload;
+
+		expect(collection.status).toBe("ready");
+		expect(plainRows(collection)).toEqual([
+			{ id: 1, title: "edited" },
+			{ id: 3, title: "three" },
+		]);
+		// No truncate and no re-insert: only the two changed rows are written.
+		expect(changes.mock.calls.flat(2)).toEqual([
+			expect.objectContaining({ type: "update", key: 1 }),
+			expect.objectContaining({ type: "delete", key: 2 }),
+		]);
+		expect(store.metadata.get("realtime:position")).toEqual(
+			position("0/30"),
+		);
+		expect(store.metadata.has("realtime:row:b")).toBe(false);
+	});
+
+	it("replaces every held row when the server refuses to resume", async () => {
+		const store = await storeAfterFirstRun();
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store);
+		const preload = collection.preload();
+		expect(client.latest().options?.resume?.from).toEqual(position("0/10"));
+
+		// Another history, a position too old, or a server without resume:
+		// each arrives as a complete baseline.
+		client
+			.latest()
+			.reset([row("z", 9, "authoritative")], position("0/5", "cd"));
+		await preload;
+
+		expect(plainRows(collection)).toEqual([
+			{ id: 9, title: "authoritative" },
+		]);
+		expect(store.rows).toEqual(
+			new Map([[9, { id: 9, title: "authoritative" }]]),
+		);
+		expect(store.metadata).toEqual(
+			new Map<string, unknown>([
+				["realtime:position", position("0/5", "cd")],
+				["realtime:row:z", 9],
+			]),
+		);
+	});
+
+	it("forgets the position when a baseline carries none", async () => {
+		const store = await storeAfterFirstRun();
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store);
+		const preload = collection.preload();
+		client.latest().reset([row("a", 1, "one")]);
+		await preload;
+
+		expect(store.metadata).toEqual(
+			new Map<string, unknown>([["realtime:row:a", 1]]),
+		);
+	});
+
+	it.each([
+		[
+			"another query",
+			{ ...position("0/10"), queryFingerprint: "22".repeat(32) },
+		],
+		["a malformed value", { lsn: "0/10" }],
+	])("does not resume from a position stored for %s", async (_reason, stored) => {
+		const store = await storeAfterFirstRun();
+		store.metadata.set("realtime:position", stored);
+		const client = new TestClient<MessageRow>();
+		const collection = persistedCollection(client, store);
+		const preload = collection.preload();
+		expect(client.latest().options).toEqual({
+			materialize: false,
+			resume: { from: undefined },
+		});
+		client.latest().reset([row("a", 1, "one")], position("0/40"));
+		await preload;
+		expect(store.metadata.has("realtime:row:b")).toBe(false);
+		expect(plainRows(collection)).toEqual([{ id: 1, title: "one" }]);
+	});
+
+	it("resumes end to end through the real client after a restart", async () => {
+		const store = emptyStore();
+		const history = "ab".repeat(32);
+
+		const first = resumeWire();
+		const firstCollection = persistedCollection(first.client, store);
+		const firstPreload = firstCollection.preload();
+		first.admit();
+		expect(first.subscribe()).not.toHaveProperty("resume_from");
+		first.baselineSync(
+			{ continuity: { history, lsn: "0/10" } },
+			{
+				rows: [
+					{ row_key: "a".repeat(64), values: ["1", "one"] },
+					{ row_key: "b".repeat(64), values: ["2", "two"] },
+				],
+			},
+		);
+		await firstPreload;
+		await firstCollection.cleanup();
+		first.client.close();
+		expect(store.rows.size).toBe(2);
+
+		const second = resumeWire();
+		const collection = persistedCollection(second.client, store);
+		const preload = collection.preload();
+		second.admit();
+		expect(second.subscribe().resume_from).toMatchObject({
+			history,
+			lsn: "0/10",
+			query_fingerprint: "11".repeat(32),
+		});
+		second.baselineSync(
+			{
+				continuity: { history, lsn: "0/30" },
+				resume_from: { history, lsn: "0/10" },
+			},
+			{
+				rows: [],
+				changes: [
+					{
+						op: "upsert",
+						row_key: "a".repeat(64),
+						values: ["1", "edited"],
+					},
+					{ op: "remove", row_key: "b".repeat(64) },
+				],
+			},
+		);
+		await preload;
+
+		expect(plainRows(collection)).toEqual([{ id: 1, title: "edited" }]);
+		expect(store.metadata.get("realtime:position")).toMatchObject({
+			history,
+			lsn: "0/30",
+		});
+		second.client.close();
+	});
+
+	it("persists a position only once its changes are applied", async () => {
+		const store = emptyStore();
+		const client = new TestClient<MessageRow>();
+		let finishMutation!: () => void;
+		const collection = persistedCollection(client, store, {
+			onUpdate: () =>
+				new Promise<void>((resolve) => {
+					finishMutation = resolve;
+				}),
+		});
+		const preload = collection.preload();
+		client.latest().reset([row("a", 1, "one")], position("0/10"));
+		await preload;
+
+		// A persisting optimistic transaction holds sync commits in the queue.
+		const mutation = collection.update(1, (draft) => {
+			draft.title = "optimistic";
+		});
+		client.latest().batch(
+			[
+				{
+					type: "upsert",
+					rowId: "a",
+					row: { id: 1, title: "server" },
+				},
+			],
+			["8"],
+			position("0/20"),
+		);
+		expect(store.metadata.get("realtime:position")).toEqual(
+			position("0/10"),
+		);
+		expect(store.rows.get(1)).toMatchObject({ title: "one" });
+
+		finishMutation();
+		await mutation.isPersisted.promise;
+		await eventually(() =>
+			expect(store.metadata.get("realtime:position")).toEqual(
+				position("0/20"),
+			),
+		);
+		expect(store.rows.get(1)).toMatchObject({ title: "server" });
+	});
+});
+
 function createTestCollection(
 	client: TestClient<MessageRow>,
 	currentQuery = query("query-1"),
@@ -392,6 +652,72 @@ function createTestCollection(
 	);
 	cleanups.push(() => collection.cleanup());
 	return collection;
+}
+
+/** A real client on a fake transport whose server negotiates resume. */
+function resumeWire() {
+	const sent: Record<string, unknown>[] = [];
+	let receiveMessage: (event: { readonly data: unknown }) => void = () => {};
+	const client = createRealtimeClient({
+		url: "ws://realtime.test",
+		webSocketFactory: (_url, protocols) => ({
+			readyState: 1,
+			protocol: [protocols].flat()[0],
+			addEventListener: (
+				type: string,
+				listener: (event: { readonly data: unknown }) => void,
+			) => {
+				if (type === "message") receiveMessage = listener;
+			},
+			send: (data: string) => sent.push(JSON.parse(data)),
+			close: () => undefined,
+		}),
+	});
+	const receive = (message: object) =>
+		receiveMessage({ data: JSON.stringify(message) });
+	const target = { live_id: "1", epoch: "1", baseline_sync_attempt: "1" };
+	return {
+		client,
+		subscribe: () => {
+			const message = sent.find(({ type }) => type === "subscribe");
+			if (!message) throw new Error("Expected a subscribe");
+			return message;
+		},
+		admit: () => {
+			receive({ type: "ready" });
+			receive({
+				type: "subscribed",
+				request_id: "1",
+				live_id: "1",
+				epoch: "1",
+				first_sequence: "1",
+				columns: [
+					{ name: "id", type_oid: 23, typmod: -1, codec: "pg_text" },
+					{
+						name: "title",
+						type_oid: 25,
+						typmod: -1,
+						codec: "pg_text",
+					},
+				],
+			});
+		},
+		baselineSync: (start: object, batch: object) => {
+			receive({
+				type: "baseline_sync_start",
+				...target,
+				...start,
+				mvcc: { xmin: "1", xmax: "2", xip: [] },
+			});
+			receive({
+				type: "baseline_sync_batch",
+				...target,
+				index: 0,
+				...batch,
+			});
+			receive({ type: "baseline_sync_end", ...target, batch_count: 1 });
+		},
+	};
 }
 
 /** Fake transport only: subscriptions, decoding, and reconciliation are real. */
@@ -484,7 +810,7 @@ class TestClient<Row extends object> implements RealtimeClient {
 		if (options?.materialize !== false) {
 			throw new Error("Test client expects a raw subscription");
 		}
-		const subscription = new TestRawSubscription<CurrentRow>();
+		const subscription = new TestRawSubscription<CurrentRow>(options);
 		this.subscriptions.push(
 			subscription as unknown as TestRawSubscription<Row>,
 		);
@@ -526,6 +852,8 @@ class TestRawSubscription<Row> implements RawLiveQuerySubscription<Row> {
 		status: "connecting",
 		error: undefined,
 	};
+
+	constructor(readonly options?: RawLiveQueryOptions) {}
 
 	getState = (): LiveQueryState => this.currentState;
 
@@ -578,21 +906,40 @@ class TestRawSubscription<Row> implements RawLiveQuerySubscription<Row> {
 		this.txWaiters.clear();
 	};
 
-	reset(rows: readonly RawLiveQueryRow<Row>[]): void {
+	reset(
+		rows: readonly RawLiveQueryRow<Row>[],
+		position?: LiveQueryPosition,
+	): void {
 		this.currentState = { status: "live", error: undefined };
 		for (const listener of this.stateListeners) listener(this.currentState);
-		const update = { type: "rows", rows } as const;
+		const update = { type: "rows", rows, position } as const;
+		for (const listener of this.updateListeners) listener(update);
+	}
+
+	/** A resume the server confirmed: changes relative to the held rows. */
+	resume(
+		changes: readonly LiveQueryChange<Row>[],
+		position: LiveQueryPosition,
+	): void {
+		this.currentState = { status: "live", error: undefined };
+		for (const listener of this.stateListeners) listener(this.currentState);
+		const update = {
+			type: "changes",
+			changes,
+			batch: { txids: [], position, resumed: true },
+		} as const;
 		for (const listener of this.updateListeners) listener(update);
 	}
 
 	batch(
 		changes: readonly LiveQueryChange<Row>[],
 		txids: readonly string[],
+		position?: LiveQueryPosition,
 	): void {
 		const update = {
 			type: "changes",
 			changes,
-			batch: { txids },
+			batch: { txids, position },
 		} as const;
 		for (const listener of this.updateListeners) listener(update);
 		for (const txid of txids) {
@@ -672,4 +1019,149 @@ async function eventually(assertion: () => void): Promise<void> {
 		}
 	}
 	throw lastError;
+}
+
+interface PersistedState {
+	readonly rows: Map<number, MessageRow>;
+	readonly metadata: Map<string, unknown>;
+}
+
+function emptyStore(): PersistedState {
+	return { rows: new Map(), metadata: new Map() };
+}
+
+/** A store as a first run leaves it: rows a, b, c at position 0/10. */
+async function storeAfterFirstRun(): Promise<PersistedState> {
+	const store = emptyStore();
+	const client = new TestClient<MessageRow>();
+	const collection = persistedCollection(client, store);
+	const preload = collection.preload();
+	client
+		.latest()
+		.reset(
+			[row("a", 1, "one"), row("b", 2, "two"), row("c", 3, "three")],
+			position("0/10"),
+		);
+	await preload;
+	await collection.cleanup();
+	return store;
+}
+
+/**
+ * Stands in for TanStack DB persistence: it hydrates rows and collection sync
+ * metadata on start and stores each sync transaction's writes once that
+ * transaction is applied, as the SQLite persistence does in one transaction.
+ */
+function persistedCollection(
+	client: RealtimeClient,
+	store: PersistedState,
+	overrides: {
+		readonly resume?: boolean;
+		readonly onUpdate?: () => Promise<void>;
+	} = {},
+) {
+	const options = realtimeCollectionOptions({
+		id: "persisted-messages",
+		client,
+		query: query("persisted"),
+		getKey: (message) => message.id,
+		resume: overrides.resume ?? true,
+		onUpdate: overrides.onUpdate,
+	});
+	const sync = options.sync.sync;
+	const collection = createCollection({
+		...options,
+		sync: {
+			...options.sync,
+			sync: (params) => {
+				const { begin, write, commit, truncate, metadata } = params;
+				if (store.rows.size > 0 || store.metadata.size > 0) {
+					begin();
+					for (const value of store.rows.values())
+						write({ type: "insert", value });
+					for (const [key, value] of store.metadata)
+						metadata?.collection.set(key, value);
+					commit();
+				}
+				let pending: Array<(state: PersistedState) => void> = [];
+				return sync({
+					...params,
+					begin: (beginOptions) => {
+						pending = [];
+						begin(beginOptions);
+					},
+					write: (message) => {
+						pending.push((state) => {
+							if (
+								"value" in message &&
+								message.type !== "delete"
+							) {
+								state.rows.set(message.value.id, message.value);
+							} else {
+								state.rows.delete(
+									"key" in message
+										? (message.key as number)
+										: message.value.id,
+								);
+							}
+						});
+						write(message);
+					},
+					truncate: () => {
+						pending.push((state) => state.rows.clear());
+						truncate();
+					},
+					commit: (signal) => {
+						const writes = pending;
+						const receipt = commit(signal);
+						const persist = () => {
+							for (const apply of writes) apply(store);
+						};
+						if (receipt === true) persist();
+						else void receipt.then(persist, () => undefined);
+						return receipt;
+					},
+					metadata: metadata && {
+						row: metadata.row,
+						collection: {
+							...metadata.collection,
+							set: (key, value) => {
+								pending.push((state) =>
+									state.metadata.set(key, value),
+								);
+								metadata.collection.set(key, value);
+							},
+							delete: (key) => {
+								pending.push((state) =>
+									state.metadata.delete(key),
+								);
+								metadata.collection.delete(key);
+							},
+						},
+					},
+				});
+			},
+		},
+	});
+	cleanups.push(() => collection.cleanup());
+	return collection;
+}
+
+function plainRows(collection: {
+	readonly toArray: readonly MessageRow[];
+}): MessageRow[] {
+	return collection.toArray.map(({ id, title }) => ({ id, title }));
+}
+
+function row(rowId: string, id: number, title: string) {
+	return { rowId, row: { id, title } };
+}
+
+function position(lsn: string, history = "ab"): LiveQueryPosition {
+	return {
+		history: history.repeat(32),
+		lsn,
+		queryFingerprint: "11".repeat(32),
+		columns: "0123456789abcdef",
+	};
 }

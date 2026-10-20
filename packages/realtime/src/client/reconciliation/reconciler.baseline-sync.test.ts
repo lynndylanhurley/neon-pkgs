@@ -107,7 +107,11 @@ describe("baseline-sync reconciliation", () => {
 		expect(state.baselineSyncCompleted).toHaveBeenCalledOnce();
 		expect(state.baselineSyncCompleted).toHaveBeenCalledWith(0);
 		expect(state.publishReset).toHaveBeenCalledOnce();
-		expect(state.publishReset).toHaveBeenCalledWith([], appliedMvcc);
+		expect(state.publishReset).toHaveBeenCalledWith(
+			[],
+			appliedMvcc,
+			undefined,
+		);
 	});
 
 	it("does not complete a baseline sync whose rows fail to install", () => {
@@ -231,6 +235,7 @@ describe("baseline-sync reconciliation", () => {
 		expect(state.publishReset).toHaveBeenCalledWith(
 			[row(ROW_C, "c"), row(ROW_A, "a"), row(ROW_B, "b")],
 			{ xmin: "1", xmax: "2", xip: [] },
+			undefined,
 		);
 	});
 

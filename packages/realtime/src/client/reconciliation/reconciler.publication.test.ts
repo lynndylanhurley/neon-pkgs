@@ -103,6 +103,7 @@ describe("publication reconciliation", () => {
 		expect(state.publishBatch.mock.calls[0]?.[0]).toEqual({
 			changes: [],
 			txids: [],
+			frontier: "0/10",
 		});
 	});
 

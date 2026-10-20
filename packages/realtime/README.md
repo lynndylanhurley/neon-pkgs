@@ -455,6 +455,52 @@ Every raw row and change has an opaque `rowId`. Do not interpret it as a primary
 key or retain it after a `rows` update replaces the complete result. Transaction
 IDs are decimal strings so 64-bit values remain exact in JavaScript.
 
+#### Resuming from rows you already hold
+
+A raw subscriber that persists its rows (for example in on-device storage) can
+resume from them instead of downloading the complete result on every start and
+reconnect:
+
+```ts
+const raw = client.subscribe(sealedQuery, {
+  materialize: false,
+  resume: { from: loadStoredPosition() }, // undefined on first run
+});
+
+raw.onUpdate((update) => {
+  if (update.type === "rows") {
+    // Complete baseline: replace everything, as without `resume`.
+    persist(() => {
+      replaceAll(update.rows);
+      savePosition(update.position);
+    });
+  } else {
+    // Ordinary changes, or the catch-up of a confirmed resume
+    // (`update.batch.resumed`).
+    persist(() => {
+      applyCommittedChanges(update.changes);
+      savePosition(update.batch.position);
+    });
+  }
+});
+```
+
+Save each position in the same storage transaction as the rows it describes. A
+position saved ahead of its rows would let a resume skip changes. Because
+catch-up `remove` changes name rows by `rowId`, keep each row's `rowId` with it.
+With `resume`, a `rowId` stays valid across a confirmed resume.
+`parseLiveQueryPosition()` validates a stored value.
+
+The server resumes only when it can prove continuity: the same database history,
+a position it can still serve changes from, the same query fingerprint, and the
+same result columns. Anything else, including a server that does not support
+resume, produces an ordinary complete `rows` update. Rows held before it must be
+discarded, exactly as without `resume`. The client offers the
+`neon.realtime.v1+resume` WebSocket subprotocol only while a resumable
+subscription is active, and sends a position only when the server selects it.
+Reconnects resume from the latest applied position automatically. Resume is
+available only for raw subscriptions.
+
 For SSR, pass server-executed rows as `initialData` when subscribing. They are
 available immediately with status `connecting` until the first authoritative
 result. Realtime does not transform those rows: the application is responsible

@@ -8,9 +8,14 @@ import {
 	decodeServerFrame,
 	encodeClientMessage,
 	ProtocolError,
+	REALTIME_RESUME_SUBPROTOCOL,
 	REALTIME_SUBPROTOCOL,
 } from "../protocol/index.js";
-import type { ServerMessage, WireColumn } from "../protocol/messages.js";
+import type {
+	ResumePosition,
+	ServerMessage,
+	WireColumn,
+} from "../protocol/messages.js";
 import {
 	BaselineSyncPublicationReconciler,
 	type ReconciliationEventSink,
@@ -42,6 +47,10 @@ export interface ConnectionSealedQuery {
 export interface ConnectionCallbacks {
 	readonly events?: SubscriptionEventSink;
 	readonly reconciliation: ReconciliationTarget;
+	/** Offer the resume subprotocol while this subscription is active. */
+	readonly resumable?: boolean;
+	/** Cursor for the next subscribe; `negotiated` is false without resume. */
+	resumeRequest?(negotiated: boolean): ResumePosition | undefined;
 	admitted(columns: readonly WireColumn[]): void;
 	connecting(): void;
 	queryUnavailable(): void;
@@ -147,6 +156,7 @@ export class ConnectionCoordinator {
 	private reconnectEpisodeGeneration = 0;
 	private requestId = 0n;
 	private ready = false;
+	private resumeNegotiated = false;
 	private disposed = false;
 	private terminalConnection?: ConnectionCoordinatorError;
 	private pendingConnectionError?: ConnectionCoordinatorError;
@@ -328,13 +338,18 @@ export class ConnectionCoordinator {
 			return;
 		this.cancelReconnect();
 		this.ready = false;
+		this.resumeNegotiated = false;
 		this.events.connection.attemptStarted();
+		// Offer resume only when a subscription can use it, so connections
+		// without resumable subscriptions negotiate exactly as before.
+		const protocols = [...this.activeSubscriptions].some(
+			(subscription) => subscription.callbacks.resumable,
+		)
+			? [REALTIME_RESUME_SUBPROTOCOL, REALTIME_SUBPROTOCOL]
+			: REALTIME_SUBPROTOCOL;
 		let socket: WebSocketLike;
 		try {
-			socket = this.webSocketFactory(
-				this.options.url,
-				REALTIME_SUBPROTOCOL,
-			);
+			socket = this.webSocketFactory(this.options.url, protocols);
 		} catch (error) {
 			this.noteConnectionLost(error);
 			this.scheduleReconnect();
@@ -388,6 +403,8 @@ export class ConnectionCoordinator {
 				);
 			}
 			this.ready = true;
+			this.resumeNegotiated =
+				this.socket?.protocol === REALTIME_RESUME_SUBPROTOCOL;
 			this.events.connection.ready();
 			this.pendingConnectionError = undefined;
 			this.heartbeat?.start();
@@ -662,10 +679,14 @@ export class ConnectionCoordinator {
 		if (subscription.queuedRenewals.length > 0) {
 			subscription.events.renewalStarted();
 		}
+		const resumeFrom = subscription.callbacks.resumeRequest?.(
+			this.resumeNegotiated,
+		);
 		this.send({
 			type: "subscribe",
 			request_id: requestId,
 			authorization: subscription.query.capability,
+			...(resumeFrom ? { resume_from: resumeFrom } : {}),
 		});
 	}
 
@@ -690,6 +711,7 @@ export class ConnectionCoordinator {
 
 	private disconnected(): void {
 		this.ready = false;
+		this.resumeNegotiated = false;
 		this.cancelStabilityTimer();
 		this.pendingRequests.clear();
 		this.liveSubscriptions.clear();

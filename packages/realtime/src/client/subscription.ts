@@ -1,6 +1,14 @@
 import type { ConnectionCoordinatorError } from "./connection/coordinator.js";
 import type { SubscriptionEventSink } from "./diagnostics.js";
 import type { ParsedMvccSnapshot } from "./mvcc.js";
+import {
+	advancePosition,
+	columnsDigest,
+	type LiveQueryPosition,
+	positionAt,
+	positionMatches,
+	toResumePosition,
+} from "./position.js";
 import type { PostgreSQLParserRegistry } from "./postgres/parsers.js";
 import {
 	decodeRow,
@@ -8,7 +16,9 @@ import {
 	validateColumns,
 } from "./postgres/value-decoder.js";
 import type {
+	ContinuityCursor,
 	MvccSnapshot,
+	ResumePosition,
 	WireChange,
 	WireColumn,
 	WireRow,
@@ -66,10 +76,17 @@ export class Subscription<Row>
 	private readonly rows?: Map<string, Row>;
 	private initialized: boolean;
 	private columns?: readonly WireColumn[];
+	private columnsDigest?: string;
 	private stagedReset?: {
 		readonly rows: readonly RawLiveQueryRow<Row>[];
 		readonly materializedRows?: Map<string, Row>;
 	};
+	private stagedResume?: readonly LiveQueryChange<Row>[];
+	// The newest position whose rows every listener has been given. Only
+	// resumable subscriptions send it to the server.
+	private position?: LiveQueryPosition;
+	// The position the current wire attempt asked to resume from.
+	private requestedResume?: LiveQueryPosition;
 	private readonly appliedBatches = new Map<
 		readonly WireChange[],
 		readonly LiveQueryChange<Row>[]
@@ -93,7 +110,18 @@ export class Subscription<Row>
 		private readonly parsers: PostgreSQLParserRegistry,
 		initialData: readonly Row[] | undefined,
 		private readonly events: SubscriptionEventSink,
+		private readonly resumable = false,
+		resumeFrom?: LiveQueryPosition,
 	) {
+		if (resumable && materialized) {
+			throw new Error(
+				"Only raw live-query subscriptions can resume; pass materialize: false",
+			);
+		}
+		// A position for another query describes rows this query never produced.
+		if (resumeFrom?.queryFingerprint === query.queryFingerprint) {
+			this.position = resumeFrom;
+		}
 		if (materialized) {
 			this.rows = new Map(
 				(initialData ?? []).map((row, index) => [
@@ -122,6 +150,38 @@ export class Subscription<Row>
 	admit(columns: readonly WireColumn[]): void {
 		validateColumns(columns);
 		this.columns = columns;
+		this.columnsDigest = columnsDigest(columns);
+	}
+
+	/**
+	 * Return the cursor to send with the next subscribe, when the server
+	 * negotiated resume, and remember it so only that cursor is accepted.
+	 */
+	resumeRequest(negotiated: boolean): ResumePosition | undefined {
+		const position = this.position;
+		if (
+			!negotiated ||
+			!this.resumable ||
+			this.closed ||
+			!position ||
+			position.queryFingerprint !== this.query.queryFingerprint
+		) {
+			this.requestedResume = undefined;
+			return undefined;
+		}
+		this.requestedResume = position;
+		return toResumePosition(position);
+	}
+
+	acceptsResume(from: ContinuityCursor): boolean {
+		const requested = this.requestedResume;
+		return (
+			!this.closed &&
+			requested !== undefined &&
+			requested === this.position &&
+			positionMatches(requested, from) &&
+			requested.columns === this.columnsDigest
+		);
 	}
 
 	getState = (): LiveQueryState => this.state;
@@ -206,9 +266,27 @@ export class Subscription<Row>
 		};
 	}
 
+	installResume(wireChanges: readonly WireChange[]): void {
+		if (this.closed) return;
+		this.stagedResume = this.decodeChanges(wireChanges);
+	}
+
 	applyBatch(wireChanges: readonly WireChange[]): void {
 		if (this.closed) return;
-		const changes = Object.freeze(
+		const changes = this.decodeChanges(wireChanges);
+		const targetRows = this.stagedReset?.materializedRows ?? this.rows;
+		for (const change of changes) {
+			if (change.type === "remove") targetRows?.delete(change.rowId);
+			else targetRows?.set(change.rowId, change.row);
+		}
+		this.appliedBatches.set(wireChanges, changes);
+		if (!this.stagedReset) this.snapshot = this.makeSnapshot();
+	}
+
+	private decodeChanges(
+		wireChanges: readonly WireChange[],
+	): readonly LiveQueryChange<Row>[] {
+		return Object.freeze(
 			wireChanges.map((change): LiveQueryChange<Row> => {
 				if (change.op === "remove") {
 					return Object.freeze({
@@ -228,26 +306,35 @@ export class Subscription<Row>
 				});
 			}),
 		);
-		const targetRows = this.stagedReset?.materializedRows ?? this.rows;
-		for (const change of changes) {
-			if (change.type === "remove") targetRows?.delete(change.rowId);
-			else targetRows?.set(change.rowId, change.row);
-		}
-		this.appliedBatches.set(wireChanges, changes);
-		if (!this.stagedReset) this.snapshot = this.makeSnapshot();
 	}
 
 	decodeFailed(error: unknown): void {
 		if (!(error instanceof PostgresValueParserError)) throw error;
 		this.appliedBatches.clear();
 		this.stagedReset = undefined;
+		this.stagedResume = undefined;
 		this.owner.parserFailed(this, error);
 	}
 
-	publishReset(_wireRows: readonly WireRow[], mvcc: MvccSnapshot): void {
+	publishReset(
+		_wireRows: readonly WireRow[],
+		mvcc: MvccSnapshot,
+		continuity?: ContinuityCursor,
+	): void {
 		if (this.closed) return;
 		const staged = this.stagedReset;
 		if (!staged) throw new Error("Realtime published an uninstalled reset");
+		// Without a continuity cursor the server cannot vouch for these rows at
+		// any later point, so nothing is resumable until the next baseline.
+		this.position =
+			continuity && this.columnsDigest
+				? positionAt(
+						continuity,
+						this.query.queryFingerprint,
+						this.columnsDigest,
+					)
+				: undefined;
+		this.requestedResume = undefined;
 		if (this.rows && staged.materializedRows) {
 			this.rows.clear();
 			for (const [rowId, row] of staged.materializedRows)
@@ -259,7 +346,37 @@ export class Subscription<Row>
 		this.transactions.applySnapshot(mvcc);
 		this.notify(
 			this.updateListeners,
-			Object.freeze({ type: "rows", rows: staged.rows }),
+			Object.freeze({
+				type: "rows",
+				rows: staged.rows,
+				position: this.position,
+			}),
+		);
+	}
+
+	publishResume(
+		_wireChanges: readonly WireChange[],
+		mvcc: MvccSnapshot,
+		continuity: ContinuityCursor,
+	): void {
+		if (this.closed) return;
+		const changes = this.stagedResume;
+		const position = this.position;
+		if (!changes || !position) {
+			throw new Error("Realtime published an uninstalled resume");
+		}
+		this.stagedResume = undefined;
+		this.requestedResume = undefined;
+		this.position = advancePosition(position, continuity.lsn);
+		this.transactions.applySnapshot(mvcc);
+		const info = Object.freeze({
+			txids: Object.freeze([]) as readonly string[],
+			position: this.position,
+			resumed: true as const,
+		});
+		this.notify(
+			this.updateListeners,
+			Object.freeze({ type: "changes", changes, batch: info }),
 		);
 	}
 
@@ -271,7 +388,13 @@ export class Subscription<Row>
 				: this.appliedBatches.get(batch.changes);
 		if (!changes) throw new Error("Realtime published an unapplied batch");
 		this.appliedBatches.delete(batch.changes);
-		const info = Object.freeze({ txids: batch.txids });
+		if (this.position) {
+			this.position = advancePosition(this.position, batch.frontier);
+		}
+		const info = Object.freeze({
+			txids: batch.txids,
+			position: this.position,
+		});
 		this.notify(
 			this.updateListeners,
 			Object.freeze({ type: "changes", changes, batch: info }),
@@ -280,6 +403,12 @@ export class Subscription<Row>
 			this.notify(this.changeListeners, this.snapshot);
 		}
 		for (const txid of batch.txids) this.transactions.seen(txid);
+	}
+
+	advancePosition(lsn: string): void {
+		if (!this.closed && this.position) {
+			this.position = advancePosition(this.position, lsn);
+		}
 	}
 
 	applyProgress(mvcc: ParsedMvccSnapshot): void {
@@ -377,8 +506,11 @@ export class Subscription<Row>
 
 	private resetSynchronization(): void {
 		this.columns = undefined;
+		this.columnsDigest = undefined;
 		this.appliedBatches.clear();
 		this.stagedReset = undefined;
+		this.stagedResume = undefined;
+		this.requestedResume = undefined;
 	}
 
 	private setLifecycle(

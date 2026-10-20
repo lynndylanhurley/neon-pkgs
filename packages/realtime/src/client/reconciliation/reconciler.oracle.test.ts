@@ -166,7 +166,13 @@ function driveReconciler(messages: readonly Message[]): readonly Observation[] {
 	const rows = new Map<string, WireRow["values"]>();
 	const target: ReconciliationTarget = {
 		baselineSyncStarted: () => undefined,
+		acceptsResume: () => false,
 		installReset: (reset) => replaceRows(rows, reset),
+		installResume: () => {
+			throw new Error("the oracle never resumes");
+		},
+		publishResume: () => undefined,
+		advancePosition: () => undefined,
 		applyBatch: (changes) => applyChanges(rows, changes),
 		publishReset: (reset) =>
 			observations.push({
@@ -257,6 +263,7 @@ function reduceIndependently(
 					const batch = {
 						changes: [...pendingChanges],
 						txids: [...pendingTxids],
+						frontier: message.frontier.lsn,
 					};
 					if (live) {
 						applyChanges(rows, batch.changes);

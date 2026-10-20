@@ -1,3 +1,7 @@
+export {
+	type LiveQueryPosition,
+	parseLiveQueryPosition,
+} from "./position.js";
 export type {
 	PostgreSQLBytesParser,
 	PostgreSQLParserForOid,

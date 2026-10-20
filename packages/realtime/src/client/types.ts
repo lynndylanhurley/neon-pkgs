@@ -1,10 +1,16 @@
 import type { NoInferCompat } from "./no-infer.js";
+import type { LiveQueryPosition } from "./position.js";
 import type { PostgreSQLParsers } from "./postgres/parsers.js";
 import type { SealedLiveQuery } from "./sealed-query.js";
 
 /** Minimal WebSocket contract used by the Realtime client. */
 export interface WebSocketLike {
 	readonly readyState: number;
+	/**
+	 * Subprotocol the server selected. Transports without it never negotiate
+	 * resumable subscriptions.
+	 */
+	readonly protocol?: string;
 	addEventListener(type: "open", listener: () => void): void;
 	addEventListener(
 		type: "message",
@@ -292,6 +298,17 @@ export type LiveQuerySnapshot<Row> = LiveQueryState & {
 export interface LiveQueryBatchInfo {
 	/** Exact PostgreSQL transaction IDs represented as decimal strings. */
 	readonly txids: readonly string[];
+	/**
+	 * Position reached once these changes are applied, when the server reports
+	 * continuity. Persist it in the same transaction as the changes.
+	 */
+	readonly position?: LiveQueryPosition;
+	/**
+	 * `true` when the server confirmed a resume and these changes bring the
+	 * rows held at the requested position up to date. Their transaction IDs
+	 * are not listed.
+	 */
+	readonly resumed?: true;
 }
 
 /**
@@ -341,6 +358,11 @@ export type RawLiveQueryUpdate<Row> =
 			readonly type: "rows";
 			/** Rows replacing the preceding result. */
 			readonly rows: readonly RawLiveQueryRow<Row>[];
+			/**
+			 * Position of these rows, when the server reports continuity. Persist
+			 * it in the same transaction as the rows.
+			 */
+			readonly position?: LiveQueryPosition;
 	  }
 	| {
 			/** Incremental changes from one atomic publication. */
@@ -367,6 +389,22 @@ export interface MaterializedLiveQueryOptions<Row> {
 export interface RawLiveQueryOptions {
 	/** Disable SDK materialization and consume raw result updates directly. */
 	readonly materialize: false;
+	/**
+	 * Resume from rows the caller already holds instead of receiving them again.
+	 *
+	 * When the server negotiates resume and confirms continuity, the first
+	 * update is a `changes` update with `batch.resumed` set, relative to the
+	 * rows at `from`. Otherwise the first update is a complete `rows` update,
+	 * as without this option. Reconnects resume from the latest
+	 * applied position the same way.
+	 *
+	 * Omit `from` to start from a baseline but still resume on reconnect. A
+	 * malformed `from`, or one for a different query, is ignored.
+	 */
+	readonly resume?: {
+		/** Position persisted together with the rows the caller holds. */
+		readonly from?: LiveQueryPosition;
+	};
 }
 
 /**

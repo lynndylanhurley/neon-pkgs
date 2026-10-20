@@ -1,6 +1,8 @@
 import { type ParsedMvccSnapshot, parseMvccSnapshot } from "../mvcc.js";
+import { continuesFrom } from "../position.js";
 import { ProtocolError } from "../protocol/codec.js";
 import type {
+	ContinuityCursor,
 	MvccSnapshot,
 	ServerMessage,
 	WireChange,
@@ -10,19 +12,40 @@ import type {
 export interface ReconciledBatch {
 	readonly changes: readonly WireChange[];
 	readonly txids: readonly string[];
+	/** LSN of the commit that published this batch. */
+	readonly frontier: string;
 }
 
 export interface ReconciliationTarget {
 	/** Observe a baseline-sync attempt after reconciliation accepts it. */
 	baselineSyncStarted(): void;
+	/**
+	 * Whether this target asked to resume from exactly `from` and still holds
+	 * that state. A resumed baseline is a protocol violation otherwise.
+	 */
+	acceptsResume(from: ContinuityCursor): boolean;
 	/** Install state without notifying application listeners. */
 	installReset(rows: readonly WireRow[]): void;
+	/** Install a resumed baseline's catch-up changes without notifying listeners. */
+	installResume(changes: readonly WireChange[]): void;
 	/** Install changes without notifying application listeners. */
 	applyBatch(changes: readonly WireChange[]): void;
 	/** Notify raw listeners after all state for this publication is installed. */
-	publishReset(rows: readonly WireRow[], mvcc: MvccSnapshot): void;
+	publishReset(
+		rows: readonly WireRow[],
+		mvcc: MvccSnapshot,
+		continuity?: ContinuityCursor,
+	): void;
+	/** Notify listeners after a resumed baseline's changes are installed. */
+	publishResume(
+		changes: readonly WireChange[],
+		mvcc: MvccSnapshot,
+		continuity: ContinuityCursor,
+	): void;
 	/** Notify listeners after all state for this publication is installed. */
 	publishBatch(batch: ReconciledBatch): void;
+	/** Advance past a commit that carried no changes for this target. */
+	advancePosition(lsn: string): void;
 	/** Confirm installed progress without notifying row listeners. */
 	applyProgress(mvcc: ParsedMvccSnapshot): void;
 	/** Publish the one fully caught-up materialized view and enter `live`. */
@@ -66,8 +89,12 @@ interface BaselineSyncVersion {
 interface PendingBaselineSync {
 	readonly version: BaselineSyncVersion;
 	readonly mvcc: MvccSnapshot;
+	readonly continuity?: ContinuityCursor;
+	/** Set when this attempt continues the target's state instead of replacing it. */
+	readonly resumeFrom?: ContinuityCursor;
 	nextBatch: number;
 	rows: WireRow[];
+	changes: WireChange[];
 	rowKeys: Set<string>;
 }
 
@@ -211,6 +238,7 @@ export class BaselineSyncPublicationReconciler {
 				this.publicationCommit(
 					message.publication_id,
 					message.body_count,
+					message.frontier.lsn,
 				);
 				return;
 		}
@@ -252,12 +280,24 @@ export class BaselineSyncPublicationReconciler {
 		) {
 			throw new ProtocolError("invalid baseline sync start");
 		}
+		const resumeFrom = message.resume_from;
+		if (
+			resumeFrom &&
+			(!message.continuity ||
+				!continuesFrom(message.continuity, resumeFrom) ||
+				!state.target.acceptsResume(resumeFrom))
+		) {
+			throw new ProtocolError("unexpected resumed baseline sync");
+		}
 		state.latestBaselineSync = version;
 		state.baselineSync = {
 			version,
 			mvcc: message.mvcc,
+			continuity: message.continuity,
+			resumeFrom,
 			nextBatch: 0,
 			rows: [],
+			changes: [],
 			rowKeys: new Set(),
 		};
 		state.target.baselineSyncStarted();
@@ -288,6 +328,33 @@ export class BaselineSyncPublicationReconciler {
 			message.index !== baselineSync.nextBatch
 		) {
 			throw new ProtocolError("invalid baseline sync batch");
+		}
+		if (baselineSync.resumeFrom) {
+			if (message.rows.length > 0 || message.changes === undefined) {
+				throw new ProtocolError("invalid resumed baseline sync batch");
+			}
+			for (const change of message.changes) {
+				if (
+					change.op === "upsert" &&
+					change.values.length !== state.columnCount
+				) {
+					throw new ProtocolError(
+						"baseline sync row arity does not match columns",
+					);
+				}
+				if (baselineSync.rowKeys.has(change.row_key)) {
+					throw new ProtocolError(
+						"baseline sync contains a duplicate row key",
+					);
+				}
+				baselineSync.rowKeys.add(change.row_key);
+				baselineSync.changes.push(change);
+			}
+			baselineSync.nextBatch += 1;
+			return;
+		}
+		if (message.changes !== undefined) {
+			throw new ProtocolError("baseline sync batch carries changes");
 		}
 		for (const row of message.rows) {
 			if (row.values.length !== state.columnCount) {
@@ -335,10 +402,13 @@ export class BaselineSyncPublicationReconciler {
 		// the informational MVCC fields can incorrectly discard valid changes.
 		const replay = state.backlog;
 		const rows = Object.freeze([...baselineSync.rows]);
+		const changes = Object.freeze([...baselineSync.changes]);
+		const { continuity, resumeFrom } = baselineSync;
 		state.baselineSync = undefined;
 		this.releaseBacklog(state);
 		try {
-			state.target.installReset(rows);
+			if (resumeFrom) state.target.installResume(changes);
+			else state.target.installReset(rows);
 			for (const batch of replay) {
 				if (batch.changes.length > 0) {
 					state.target.applyBatch(batch.changes);
@@ -351,7 +421,11 @@ export class BaselineSyncPublicationReconciler {
 			return;
 		}
 		state.target.baselineSyncCompleted(message.batch_count);
-		state.target.publishReset(rows, baselineSync.mvcc);
+		if (resumeFrom && continuity) {
+			state.target.publishResume(changes, baselineSync.mvcc, continuity);
+		} else {
+			state.target.publishReset(rows, baselineSync.mvcc, continuity);
+		}
 		for (const batch of replay) state.target.publishBatch(batch);
 		state.live = true;
 		state.lifecycle?.baselineCompleted();
@@ -443,7 +517,11 @@ export class BaselineSyncPublicationReconciler {
 		}
 	}
 
-	private publicationCommit(publicationId: string, bodyCount: number): void {
+	private publicationCommit(
+		publicationId: string,
+		bodyCount: number,
+		frontier: string,
+	): void {
 		const publication = this.publication;
 		if (
 			!publication ||
@@ -464,6 +542,7 @@ export class BaselineSyncPublicationReconciler {
 			const batch = Object.freeze({
 				changes: Object.freeze([...staged.changes]),
 				txids: Object.freeze([...staged.txids]),
+				frontier,
 			});
 			if (state.live) immediate.push({ state, batch });
 			else state.backlog.push(batch);
@@ -505,6 +584,19 @@ export class BaselineSyncPublicationReconciler {
 		for (const { state, error } of failed) state.target.decodeFailed(error);
 		for (const { state, batch } of installed) {
 			state.target.publishBatch(batch);
+		}
+		// Targets this publication skipped have still applied everything through
+		// its frontier. Lagging targets keep their older position; resuming from
+		// it replays nothing for them, so it stays correct.
+		for (const [liveId, state] of this.targets) {
+			if (
+				state.active &&
+				state.live &&
+				!publication.batches.has(liveId) &&
+				!publication.resets.has(liveId)
+			) {
+				state.target.advancePosition(frontier);
+			}
 		}
 	}
 

@@ -56,6 +56,31 @@ or incremental change batch as one TanStack sync transaction. Realtime
 subscription is `connecting` or `stale`; terminal errors put the collection into
 its error state.
 
+## Resuming persisted collections
+
+Pass `resume: true` to avoid downloading the complete result on every start and
+reconnect:
+
+```ts
+export const todos = createCollection(realtimeCollectionOptions({
+  id: "todos",
+  client,
+  query,
+  getKey: (todo) => todo.id,
+  resume: true,
+}));
+```
+
+The adapter keeps the Realtime position and each row's Realtime identity in
+TanStack DB sync metadata, written in the same sync transaction as the rows, so
+TanStack DB persistence stores them together. On the next start, when the
+server confirms continuity, only the changes since that position are applied. No
+`truncate()` and no re-insert. Otherwise the collection is reset from a complete
+baseline exactly as without `resume`. That covers a different database history,
+a position the server can no longer serve, a changed query or result columns,
+and a server without resume support. A collection without persistence starts
+empty, so it begins from a baseline and resumes only across reconnects.
+
 ## Optimistic mutations
 
 Use TanStack DB mutation handlers normally. Have the application mutation

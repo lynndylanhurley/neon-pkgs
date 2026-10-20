@@ -9,6 +9,7 @@ import {
 	registerSubscriptionEvents,
 } from "./diagnostics.js";
 import type { NoInferCompat } from "./no-infer.js";
+import { parseLiveQueryPosition } from "./position.js";
 import {
 	createParserRegistry,
 	type PostgreSQLParserRegistry,
@@ -88,6 +89,10 @@ class RealtimeClientImpl implements RealtimeClient {
 			? (options as MaterializedLiveQueryOptions<Row> | undefined)
 					?.initialData
 			: undefined;
+		const resume = (options as RawLiveQueryOptions | undefined)?.resume;
+		// A malformed stored position falls back to a baseline, like any other
+		// position the server cannot continue from.
+		const resumeFrom = parseLiveQueryPosition(resume?.from);
 		const subscription = new Subscription(
 			this,
 			query,
@@ -95,11 +100,16 @@ class RealtimeClientImpl implements RealtimeClient {
 			this.parsers,
 			initialData,
 			events,
+			resume !== undefined,
+			resumeFrom,
 		);
 		registerSubscriptionEvents(subscription, events);
 		const handle = this.coordinator.subscribe(query, {
 			events,
 			reconciliation: subscription,
+			resumable: resume !== undefined,
+			resumeRequest: (negotiated) =>
+				subscription.resumeRequest(negotiated),
 			admitted: (columns) => subscription.admit(columns),
 			connecting: () => subscription.connecting(),
 			queryUnavailable: () => subscription.queryUnavailable(),

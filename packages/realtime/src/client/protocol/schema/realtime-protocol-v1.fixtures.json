@@ -27,9 +27,16 @@
     { "type": "subscription_error", "live_id": "2", "code": "backend_overloaded", "message": "backend overloaded", "retry_after_ms": 2000 },
     { "type": "subscription_error", "live_id": "2", "code": "backend_overloaded", "message": "backend overloaded", "retry_after_ms": 4294967295, "sqlstate": "53300" },
     { "type": "subscription_error", "live_id": "2", "code": "backend_overloaded", "message": "backend overloaded" },
-    { "type": "connection_error", "code": "protocol_error", "message": "invalid sequence" }
+    { "type": "connection_error", "code": "protocol_error", "message": "invalid sequence" },
+    { "type": "subscribe", "request_id": "1", "authorization": "token", "resume_from": { "history": "abababababababababababababababababababababababababababababababab", "lsn": "0/10", "query_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111", "columns": "0123456789abcdef" } },
+    { "type": "baseline_sync_start", "live_id": "2", "epoch": "1", "baseline_sync_attempt": "1", "continuity": { "history": "abababababababababababababababababababababababababababababababab", "lsn": "1A/FF00" }, "mvcc": { "xmin": "1", "xmax": "2", "xip": [] } },
+    { "type": "baseline_sync_start", "live_id": "2", "epoch": "1", "baseline_sync_attempt": "1", "continuity": { "history": "abababababababababababababababababababababababababababababababab", "lsn": "0/30" }, "resume_from": { "history": "abababababababababababababababababababababababababababababababab", "lsn": "0/10" }, "mvcc": { "xmin": "1", "xmax": "2", "xip": [] } },
+    { "type": "baseline_sync_batch", "live_id": "2", "epoch": "1", "baseline_sync_attempt": "1", "index": 0, "rows": [], "changes": [{ "op": "remove", "row_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] }
   ],
   "invalid": [
+    { "type": "subscribe", "request_id": "1", "authorization": "token", "resume_from": { "history": "abababababababababababababababababababababababababababababababab", "lsn": "0/10", "query_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111" } },
+    { "type": "subscribe", "request_id": "1", "authorization": "token", "resume_from": { "history": "abababababababababababababababababababababababababababababababab", "lsn": "0/010", "query_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111", "columns": "0123456789abcdef" } },
+    { "type": "baseline_sync_start", "live_id": "2", "epoch": "1", "baseline_sync_attempt": "1", "continuity": { "history": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB", "lsn": "0/10" }, "mvcc": { "xmin": "1", "xmax": "2", "xip": [] } },
     { "type": "hello", "database": "app" },
     { "type": "hello", "database": "app", "extra": true },
     { "type": "subscribe", "request_id": "0", "authorization": "token" },

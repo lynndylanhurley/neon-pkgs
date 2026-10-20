@@ -1,6 +1,9 @@
 import {
+	type LiveQueryBatchInfo,
 	type LiveQueryChange,
+	type LiveQueryPosition,
 	type LiveQueryState,
+	parseLiveQueryPosition,
 	QueryRefreshController,
 	type RawLiveQueryRow,
 	type RawLiveQuerySubscription,
@@ -12,6 +15,7 @@ import type {
 	BaseCollectionConfig,
 	CollectionConfig,
 	SyncAppliedReceipt,
+	SyncMetadataApi,
 	UtilsRecord,
 } from "@tanstack/db";
 import { withCollectionConfigFactory } from "@tanstack/db";
@@ -65,6 +69,21 @@ export interface RealtimeCollectionConfig<
 	readonly refreshQuery?: () => Promise<SealedLiveQuery<Row>>;
 	/** Derive the stable unique TanStack DB key for a row. */
 	readonly getKey: (row: Row) => Key;
+	/**
+	 * Resume from the rows the collection already holds instead of downloading
+	 * the complete result again on every start and reconnect.
+	 *
+	 * The adapter stores the Realtime position and row identities in TanStack
+	 * DB sync metadata, in the same transaction as the rows they describe, so a
+	 * persisted collection resumes after a restart. When the server cannot
+	 * confirm continuity (another database history, a position too old, a
+	 * changed query or result shape, or a server without resume support), the
+	 * collection is reset from a complete baseline exactly as without this
+	 * option.
+	 *
+	 * @defaultValue `false`
+	 */
+	readonly resume?: boolean;
 }
 
 /**
@@ -118,7 +137,13 @@ function createRealtimeCollectionOptions<
 >(
 	config: RealtimeCollectionConfig<Row, Key, Schema>,
 ): RealtimeCollectionOptions<Row, Key, Schema> {
-	const { client, query: initialQuery, refreshQuery, ...baseConfig } = config;
+	const {
+		client,
+		query: initialQuery,
+		refreshQuery,
+		resume = false,
+		...baseConfig
+	} = config;
 	let activeSubscription: RawLiveQuerySubscription<Row> | undefined;
 	const utils: RealtimeCollectionUtils = Object.freeze({
 		awaitTxId: async (txid, timeout) => {
@@ -153,12 +178,28 @@ function createRealtimeCollectionOptions<
 				truncate,
 				markReady,
 				markError,
+				metadata,
 			}) => {
 				let cleaned = false;
-				let rowIds = new Map<string, Key>();
-				let keys = new Map<Key, string>();
+				// Without sync metadata there is nowhere to keep a position next to
+				// the rows, so every start is a complete baseline.
+				const resumeStore =
+					resume && metadata ? metadata.collection : undefined;
+				const stored = resumeStore
+					? loadResumeState<Key>(
+							resumeStore,
+							initialQuery.queryFingerprint,
+						)
+					: undefined;
+				let rowIds = stored?.rowIds ?? new Map<string, Key>();
+				let keys = new Map<Key, string>(
+					[...rowIds].map(([rowId, key]) => [key, rowId]),
+				);
 				const subscription = client.subscribe(initialQuery, {
 					materialize: false,
+					...(resumeStore
+						? { resume: { from: stored?.position } }
+						: {}),
 				});
 				activeSubscription = subscription;
 
@@ -191,6 +232,7 @@ function createRealtimeCollectionOptions<
 
 				const installReset = (
 					rows: readonly RawLiveQueryRow<Row>[],
+					position: LiveQueryPosition | undefined,
 				) => {
 					try {
 						const nextRowIds = new Map<string, Key>();
@@ -215,6 +257,13 @@ function createRealtimeCollectionOptions<
 						truncate();
 						for (const { row } of rows)
 							write({ type: "insert", value: row });
+						if (resumeStore) {
+							for (const { key } of resumeStore.list(ROW_PREFIX))
+								resumeStore.delete(key);
+							for (const [rowId, key] of nextRowIds)
+								resumeStore.set(ROW_PREFIX + rowId, key);
+							savePosition(resumeStore, position);
+						}
 						const receipt = commit();
 						rowIds = nextRowIds;
 						keys = nextKeys;
@@ -226,6 +275,7 @@ function createRealtimeCollectionOptions<
 
 				const applyBatch = (
 					changes: readonly LiveQueryChange<Row>[],
+					batch: LiveQueryBatchInfo,
 				) => {
 					try {
 						const nextRowIds = new Map(rowIds);
@@ -290,10 +340,29 @@ function createRealtimeCollectionOptions<
 
 						begin();
 						for (const message of writes) write(message);
+						if (resumeStore) {
+							for (const change of changes) {
+								const key = nextRowIds.get(change.rowId);
+								if (key === undefined)
+									resumeStore.delete(
+										ROW_PREFIX + change.rowId,
+									);
+								else
+									resumeStore.set(
+										ROW_PREFIX + change.rowId,
+										key,
+									);
+							}
+							savePosition(resumeStore, batch.position);
+						}
 						const receipt = commit();
 						rowIds = nextRowIds;
 						keys = nextKeys;
-						observeReceipt(receipt);
+						// A confirmed resume is the first authoritative state, like a reset.
+						observeReceipt(
+							receipt,
+							batch.resumed ? markReady : undefined,
+						);
 					} catch (error) {
 						reportError(error);
 					}
@@ -307,8 +376,9 @@ function createRealtimeCollectionOptions<
 				};
 
 				const unsubscribeUpdate = subscription.onUpdate((update) => {
-					if (update.type === "rows") installReset(update.rows);
-					else applyBatch(update.changes);
+					if (update.type === "rows")
+						installReset(update.rows, update.position);
+					else applyBatch(update.changes, update.batch);
 				});
 				const unsubscribeState =
 					subscription.onStateChange(stateChanged);
@@ -331,4 +401,45 @@ function createRealtimeCollectionOptions<
 	};
 
 	return options;
+}
+
+const POSITION_KEY = "realtime:position";
+const ROW_PREFIX = "realtime:row:";
+
+type CollectionMetadata = SyncMetadataApi["collection"];
+
+/**
+ * Read the stored position and the row identities it covers. Anything
+ * missing, malformed, or recorded for another query yields no position, and
+ * the next baseline replaces whatever the collection holds.
+ */
+function loadResumeState<Key extends string | number>(
+	store: CollectionMetadata,
+	queryFingerprint: string,
+):
+	| {
+			readonly position: LiveQueryPosition | undefined;
+			readonly rowIds: Map<string, Key>;
+	  }
+	| undefined {
+	const position = parseLiveQueryPosition(store.get(POSITION_KEY));
+	if (!position || position.queryFingerprint !== queryFingerprint) {
+		return undefined;
+	}
+	const rowIds = new Map<string, Key>();
+	for (const { key, value } of store.list(ROW_PREFIX)) {
+		if (typeof value !== "string" && typeof value !== "number") {
+			return undefined;
+		}
+		rowIds.set(key.slice(ROW_PREFIX.length), value as Key);
+	}
+	return { position, rowIds };
+}
+
+function savePosition(
+	store: CollectionMetadata,
+	position: LiveQueryPosition | undefined,
+): void {
+	if (position) store.set(POSITION_KEY, position);
+	else store.delete(POSITION_KEY);
 }

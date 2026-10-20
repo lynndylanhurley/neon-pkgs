@@ -18,6 +18,32 @@
       "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]{1,64}$"
     },
     "rowKey": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "pgLsn": {
+      "type": "string",
+      "pattern": "^(0|[1-9A-F][0-9A-F]{0,7})/(0|[1-9A-F][0-9A-F]{0,7})$"
+    },
+    "continuityCursor": {
+      "type": "object",
+      "$comment": "Opaque database-history identity and the exact frontier at which a baseline was taken.",
+      "required": ["history", "lsn"],
+      "properties": {
+        "history": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "lsn": { "$ref": "#/$defs/pgLsn" }
+      },
+      "additionalProperties": false
+    },
+    "resumePosition": {
+      "type": "object",
+      "$comment": "A continuity cursor the client has fully applied, bound to the query and result columns it was applied under. columns is the lowercase hex FNV-1a 64-bit hash of the UTF-8 JSON array [[name, type_oid, typmod, codec], ...] built from the subscribed columns in order. Sent only on the neon.realtime.v1+resume subprotocol.",
+      "required": ["history", "lsn", "query_fingerprint", "columns"],
+      "properties": {
+        "history": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "lsn": { "$ref": "#/$defs/pgLsn" },
+        "query_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "columns": { "type": "string", "pattern": "^[0-9a-f]{16}$" }
+      },
+      "additionalProperties": false
+    },
     "base64Cell": {
       "type": "object",
       "required": ["base64"],
@@ -123,7 +149,8 @@
           "properties": {
             "type": { "const": "subscribe" },
             "request_id": { "$ref": "#/$defs/u64" },
-            "authorization": { "type": "string", "minLength": 1, "maxLength": 262144 }
+            "authorization": { "type": "string", "minLength": 1, "maxLength": 262144 },
+            "resume_from": { "$ref": "#/$defs/resumePosition" }
           },
           "additionalProperties": false
         },
@@ -206,12 +233,15 @@
         },
         {
           "type": "object",
+          "$comment": "With resume_from, this attempt continues the client's state at that cursor instead of replacing it: its batches carry changes relative to that state and no rows. Without resume_from it is an ordinary baseline. resume_from must echo the requesting subscribe's cursor and requires continuity in the same history.",
           "required": ["type", "live_id", "epoch", "baseline_sync_attempt", "mvcc"],
           "properties": {
             "type": { "const": "baseline_sync_start" },
             "live_id": { "$ref": "#/$defs/u64" },
             "epoch": { "$ref": "#/$defs/u64" },
             "baseline_sync_attempt": { "$ref": "#/$defs/u64" },
+            "continuity": { "$ref": "#/$defs/continuityCursor" },
+            "resume_from": { "$ref": "#/$defs/continuityCursor" },
             "mvcc": { "$ref": "#/$defs/mvcc" }
           },
           "additionalProperties": false
@@ -225,7 +255,12 @@
             "epoch": { "$ref": "#/$defs/u64" },
             "baseline_sync_attempt": { "$ref": "#/$defs/u64" },
             "index": { "$ref": "#/$defs/u32" },
-            "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } }
+            "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } },
+            "changes": {
+              "$comment": "Present only in a resumed attempt, whose rows must be empty.",
+              "type": "array",
+              "items": { "$ref": "#/$defs/change" }
+            }
           },
           "additionalProperties": false
         },
@@ -284,9 +319,7 @@
             "frontier": {
               "type": "object",
               "required": ["lsn"],
-              "properties": {
-                "lsn": { "type": "string", "pattern": "^(0|[1-9A-F][0-9A-F]{0,7})/(0|[1-9A-F][0-9A-F]{0,7})$" }
-              },
+              "properties": { "lsn": { "$ref": "#/$defs/pgLsn" } },
               "additionalProperties": false
             }
           },
