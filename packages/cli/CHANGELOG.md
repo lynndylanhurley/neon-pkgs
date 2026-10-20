@@ -1,5 +1,14 @@
 # neon
 
+## 8.8.1
+
+### Patch Changes
+
+- Updated dependencies [cb6a151]
+  - @neon/sdk@7.4.0
+  - @neon/config@1.9.3
+  - @neon/config-runtime@1.10.2
+
 ## 8.8.0
 
 ### Minor Changes
