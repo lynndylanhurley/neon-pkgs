@@ -1,0 +1,120 @@
+{
+  "valid": [
+    {
+      "type": "baseline_sync_fragment",
+      "live_id": "1",
+      "epoch": "1",
+      "baseline_sync_attempt": "1",
+      "index": 0,
+      "pieces": [
+        {
+          "row_index": "0",
+          "row_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "column_index": 0,
+          "offset": "0",
+          "total_bytes": "1048576",
+          "is_null": false,
+          "base64": "8J8="
+        }
+      ]
+    },
+    {
+      "type": "baseline_sync_fragment",
+      "live_id": "1",
+      "epoch": "1",
+      "baseline_sync_attempt": "1",
+      "index": 1,
+      "pieces": [
+        {
+          "row_index": "0",
+          "row_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "column_index": 0,
+          "offset": "2",
+          "total_bytes": "1048576",
+          "is_null": false,
+          "base64": "mIA="
+        }
+      ]
+    },
+    {
+      "type": "keyed_results_fragment",
+      "publication_id": "1:1",
+      "index": 0,
+      "part_index": 0,
+      "is_last": false,
+      "txids": [
+        "2"
+      ],
+      "targets": [
+        {
+          "live_id": "1",
+          "epoch": "1",
+          "sequence": "1"
+        }
+      ],
+      "pieces": [
+        {
+          "op": "upsert",
+          "row_index": "0",
+          "row_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "column_index": 0,
+          "offset": "0",
+          "total_bytes": "1048576",
+          "is_null": false,
+          "base64": "//4="
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "type": "baseline_sync_fragment",
+      "live_id": "1",
+      "epoch": "1",
+      "baseline_sync_attempt": "1",
+      "index": 0,
+      "pieces": []
+    },
+    {
+      "type": "baseline_sync_fragment",
+      "live_id": "1",
+      "epoch": "1",
+      "baseline_sync_attempt": "1",
+      "index": 0,
+      "pieces": [
+        {
+          "row_index": "0",
+          "row_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "column_index": 0,
+          "offset": "0",
+          "total_bytes": "1048576",
+          "is_null": false,
+          "base64": "AB=="
+        }
+      ]
+    },
+    {
+      "type": "keyed_results_fragment",
+      "publication_id": "1:1",
+      "index": 0,
+      "part_index": 0,
+      "is_last": false,
+      "txids": [
+        "2"
+      ],
+      "targets": [],
+      "pieces": [
+        {
+          "op": "upsert",
+          "row_index": "0",
+          "row_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "column_index": 0,
+          "offset": "0",
+          "total_bytes": "1048576",
+          "is_null": false,
+          "base64": "//4="
+        }
+      ]
+    }
+  ]
+}

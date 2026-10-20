@@ -483,10 +483,15 @@ them out of URLs, logs, and persistent browser storage. Never expose
 ## Protocol schemas
 
 The package exports its versioned protocol and decoded capability schemas at
-`@neon/realtime/schema/realtime-protocol-v1.schema.json` and
+`@neon/realtime/schema/realtime-protocol-v1.schema.json`,
+`@neon/realtime/schema/realtime-protocol-v2.schema.json`, and
 `@neon/realtime/schema/realtime-query-capability-v1.schema.json`.
 See the [schema maintenance notes](schema/README.md) for generation and
 downstream synchronization.
+
+V2 defines byte fragments for larger values while retaining the v1 message
+shapes. SDK negotiation and reassembly are separate follow-up changes; adding
+the schema alone does not enable fragment delivery.
 
 ### Output sizes and memory
 
