@@ -1,6 +1,49 @@
 jobs:
+    changes:
+        name: Detect affected packages
+        runs-on:
+            group: databricks-ghec-untrusted-runner-group
+            labels: linux-ubuntu-latest-untrusted-2core-8gb
+        outputs:
+            all: ${{ steps.affected.outputs.all }}
+            packages: ${{ steps.affected.outputs.packages }}
+            dirs: ${{ steps.affected.outputs.dirs }}
+            tools: ${{ steps.affected.outputs.tools }}
+            matrix: ${{ steps.matrix.outputs.matrix }}
+            has-tests: ${{ steps.matrix.outputs.has-tests }}
+        steps:
+            - name: Harden the runner (Audit all outbound calls)
+              uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
+              with:
+                  egress-policy: audit
+
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+              with:
+                  fetch-depth: 0 # the affected-package diff needs the base branch history
+            - uses: ./.github/actions/prepare
+            - id: affected
+              uses: ./.github/actions/affected
+              with:
+                  workflow: .github/workflows/ci.yml
+            - id: matrix
+              env:
+                  CLI: ${{ steps.affected.outputs.cli }}
+                  DIRS: ${{ steps.affected.outputs.dirs }}
+              run: |
+                  matrix=$(jq -cn --arg cli "$CLI" --argjson dirs "$DIRS" '
+                      [range(1; 5) | {name: "CLI \(.)/4", suite: "cli", shard: ., upload: "cli-\(.)-of-4"}][:(if $cli == "true" then 4 else 0 end)]
+                      + (if any($dirs[]; . != "cli" and . != "neonctl")
+                         then [{name: "non-CLI packages", suite: "non-cli", shard: 0, upload: "non-cli"}]
+                         else [] end)
+                      | {include: .}')
+                  {
+                      echo "matrix=$matrix"
+                      echo "has-tests=$(jq -r '.include | length > 0' <<<"$matrix")"
+                  } | tee -a "$GITHUB_OUTPUT"
     build:
         name: Build
+        needs: changes
+        if: needs.changes.outputs.packages != '[]'
         runs-on:
             group: databricks-ghec-untrusted-runner-group
             labels: linux-ubuntu-latest-untrusted-2core-8gb
@@ -12,7 +55,17 @@ jobs:
 
             - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
             - uses: ./.github/actions/prepare
-            - run: pnpm build
+            - name: Build affected packages and their dependencies
+              env:
+                  ALL: ${{ needs.changes.outputs.all }}
+                  PACKAGES: ${{ needs.changes.outputs.packages }}
+              run: |
+                  if [[ "$ALL" == true ]]; then
+                      pnpm build
+                  else
+                      mapfile -t filters < <(jq -r '.[] | "--filter=\(.)..."' <<<"$PACKAGES")
+                      pnpm "${filters[@]}" build
+                  fi
     lint:
         name: Lint
         runs-on:
@@ -29,6 +82,8 @@ jobs:
             - run: pnpm lint:ci
     tools-node-24:
         name: Tools (Node 24)
+        needs: changes
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs.tools == 'true'
         runs-on:
             group: databricks-ghec-untrusted-runner-group
             labels: linux-ubuntu-latest-untrusted-2core-8gb
@@ -47,30 +102,11 @@ jobs:
             - run: pnpm --filter @neon/tools build
     test:
         name: Test (${{ matrix.name }})
+        needs: changes
+        if: needs.changes.outputs.has-tests == 'true'
         strategy:
             fail-fast: false
-            matrix:
-                include:
-                    - name: CLI 1/4
-                      suite: cli
-                      shard: 1
-                      upload: cli-1-of-4
-                    - name: CLI 2/4
-                      suite: cli
-                      shard: 2
-                      upload: cli-2-of-4
-                    - name: CLI 3/4
-                      suite: cli
-                      shard: 3
-                      upload: cli-3-of-4
-                    - name: CLI 4/4
-                      suite: cli
-                      shard: 4
-                      upload: cli-4-of-4
-                    - name: non-CLI packages
-                      suite: non-cli
-                      shard: 0
-                      upload: non-cli
+            matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
         runs-on:
             group: databricks-ghec-untrusted-runner-group
             labels: linux-ubuntu-latest-untrusted-2core-8gb
@@ -87,9 +123,14 @@ jobs:
             - if: matrix.suite == 'cli' && matrix.shard == 4
               run: pnpm --filter neonctl test:ci --coverage --coverage.reporter=json
             - if: matrix.suite == 'non-cli'
-              run: pnpm --recursive --filter='./packages/**' --filter='!neon' --filter='!neonctl' test:ci --coverage --coverage.reporter=json
+              env:
+                  DIRS: ${{ needs.changes.outputs.dirs }}
+              run: |
+                  mapfile -t filters < <(jq -r '.[] | select(. != "cli" and . != "neonctl") | "--filter=./packages/\(.)"' <<<"$DIRS")
+                  pnpm --recursive "${filters[@]}" test:ci --coverage --coverage.reporter=json
             - name: Collect coverage
               run: |
+                  shopt -s nullglob
                   for report in packages/*/coverage/coverage-final.json; do
                       package_dir=${report#packages/}
                       package=${package_dir%%/*}
@@ -98,7 +139,7 @@ jobs:
                   done
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
               with:
-                  if-no-files-found: error
+                  if-no-files-found: ignore
                   name: coverage-${{ matrix.upload }}
                   path: coverage-upload
     coverage:
@@ -113,9 +154,17 @@ jobs:
               with:
                   path: coverage
                   pattern: coverage-*
-            - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+            # Flags come from the artifacts actually produced: a flag named without
+            # coverage data would blank that package instead of carrying it forward.
+            - id: flags
+              run: |
+                  flags=$(find coverage -mindepth 2 -maxdepth 2 -type d -printf '%f\n' 2>/dev/null | sort -u | paste -sd, -)
+                  echo "flags=$flags" | tee -a "$GITHUB_OUTPUT"
+            - if: steps.flags.outputs.flags != ''
+              uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
               with:
                   fail_ci_if_error: true
+                  flags: ${{ steps.flags.outputs.flags }}
                   slug: neondatabase/neon-pkgs
                   use_oidc: true
 
